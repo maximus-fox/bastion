@@ -1,6 +1,6 @@
 {
   "name": "bastion",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "Dev tooling for the Bastion Chrome extension (not shipped in the extension zip)",
   "license": "MIT",

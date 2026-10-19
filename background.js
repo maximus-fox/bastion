@@ -3,6 +3,8 @@
  * Badge, Security Headers, notifications, history, tracker counter, shield events
  */
 
+importScripts('defaults.js'); // DEFAULT_SETTINGS
+
 const SECURITY_HEADERS = [
   'strict-transport-security', 'content-security-policy', 'x-frame-options',
   'x-content-type-options', 'x-xss-protection', 'referrer-policy'
@@ -430,16 +432,6 @@ const TRACKER_DOMAINS = [
   'links.m.cronycle.com', 'mandrillapp.com',
 ];
 
-const DEFAULT_SETTINGS = {
-  autoDeleteExpired: true, blockExfil: true,
-  antiFingerprint: true, formSpy: true, antiMiner: true,
-  antiPhishing: true, blockTrackers: true,
-  hideCookieBanners: true, antiWebRTC: true,
-  antiKeylogger: true, antiTabNapping: true,
-  clipboardGuard: true,
-  jsThreatScan: true, darkPatternDetect: true, breachCheck: true,
-  blockJavascriptUrls: true, blockDataIframes: true
-};
 
 function calcGrade(count) {
   if (count >= 6) return 'A';
@@ -565,14 +557,36 @@ function updateTrackerRules(enabled) {
   });
 }
 
-// Migrate settings on version update — ensure new defaults apply
-chrome.storage.local.get('_version', (data) => {
-  const currentVersion = chrome.runtime.getManifest().version;
-  if (data._version !== currentVersion) {
-    // First run or version changed — apply new defaults for keys not yet set
-    chrome.storage.local.set({ ...DEFAULT_SETTINGS, _version: currentVersion });
+// Settings whose default changed in that version. The pre-2.3 migration
+// rewrote every key to its default on each update, so stored values of these
+// keys reflect the old default rather than a user choice.
+const DEFAULT_CHANGES = { '2.3': ['autoDeleteExpired', 'blockJavascriptUrls'] };
+
+function versionLess(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
   }
-});
+  return false;
+}
+
+// Fill in missing settings without touching the user's choices.
+async function migrateSettings({ reason, previousVersion }) {
+  const stored = await chrome.storage.local.get(null);
+  const patch = { _version: chrome.runtime.getManifest().version };
+  for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+    if (!(key in stored)) patch[key] = value;
+  }
+  if (reason === 'update' && previousVersion) {
+    for (const [version, keys] of Object.entries(DEFAULT_CHANGES)) {
+      if (versionLess(previousVersion, version)) {
+        for (const key of keys) patch[key] = DEFAULT_SETTINGS[key];
+      }
+    }
+  }
+  await chrome.storage.local.set(patch);
+}
+chrome.runtime.onInstalled.addListener(migrateSettings);
 
 // Init tracker blocking from settings
 chrome.storage.local.get(DEFAULT_SETTINGS, (s) => {

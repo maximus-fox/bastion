@@ -243,39 +243,12 @@ function showPhishingWarning(brand, domain) {
 // =============================================
 // SETTINGS & INIT
 // =============================================
-const DEFAULT_SETTINGS = {
-  autoDeleteExpired: true, blockExfil: true,
-  antiFingerprint: true, formSpy: true, antiMiner: true,
-  antiPhishing: true, blockTrackers: true,
-  hideCookieBanners: true, antiWebRTC: true,
-  antiKeylogger: true, antiTabNapping: true,
-  clipboardGuard: true,
-  jsThreatScan: true, darkPatternDetect: true, breachCheck: true,
-  blockJavascriptUrls: true, blockDataIframes: true
-};
-
-function sendSettingsToInjected(s) {
-  window.postMessage({
-    type: 'TG_SETTINGS',
-    blockExfil: s.blockExfil || false,
-    antiFingerprint: s.antiFingerprint || false,
-    formSpy: s.formSpy !== false,
-    antiMiner: s.antiMiner || false,
-    antiWebRTC: s.antiWebRTC || false,
-    antiKeylogger: s.antiKeylogger !== false,
-    antiTabNapping: s.antiTabNapping !== false,
-    clipboardGuard: s.clipboardGuard !== false,
-    blockJavascriptUrls: s.blockJavascriptUrls !== false,
-    blockDataIframes: s.blockDataIframes !== false
-  }, '*');
-}
+// DEFAULT_SETTINGS comes from defaults.js (same ISOLATED world).
 
 function autoScan() {
   try {
   if (!chrome.runtime?.id) return;
   chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
-    sendSettingsToInjected(settings);
-
     // Антифишинг
     if (settings.antiPhishing !== false) {
       checkPhishing();
@@ -793,28 +766,7 @@ function blockDataBlobIframes() {
 setTimeout(blockDataBlobIframes, 1000);
 setTimeout(blockDataBlobIframes, 3000);
 
-// Мост: postMessage от injected.js
-window.addEventListener('message', (event) => {
-  if (event.source !== window || !event.data || !event.data.type) return;
-  try { if (!chrome.runtime?.id) return; } catch { return; }
-  const type = event.data.type;
-  const MSG_MAP = {
-    'TG_EXFIL_ALERT': 'exfilAlert',
-    'TG_FINGERPRINT': 'fingerprintDetected',
-    'TG_FORM_BLOCK': 'formBlocked',
-    'TG_MINER_BLOCK': 'minerBlocked',
-    'TG_WEBRTC_BLOCK': 'webrtcBlocked',
-    'TG_KEYLOGGER_DETECT': 'keyloggerDetected',
-    'TG_CLIPBOARD_SWAP': 'clipboardSwapBlocked',
-    'TG_TABNAP_BLOCK': 'tabNappingBlocked',
-    'TG_JS_URL_BLOCK': 'jsUrlBlocked',
-    'TG_DATA_IFRAME_BLOCK': 'dataIframeBlocked',
-  };
-  const action = MSG_MAP[type];
-  if (action) {
-    chrome.runtime.sendMessage({ action, detail: event.data }).catch(() => {});
-  }
-});
+// Events from injected.js are forwarded by settings-preload.js over a private channel.
 
 // =============================================
 // AUDIT — passive XSS & SQLi detection
@@ -1281,7 +1233,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'auditPage') {
     sendResponse(auditPage());
   } else if (request.action === 'settingsUpdated') {
-    sendSettingsToInjected(request.settings);
+    // injected.js picks changes up via chrome.storage.onChanged in settings-preload.js
     sendResponse({ ok: true });
   }
   return true;

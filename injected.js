@@ -9,11 +9,10 @@
   const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
   const currentBaseDomain = getBaseDomain(location.hostname);
 
-  // Настройки — protective features default to TRUE so they work immediately
-  // at document_start before async storage read completes.
-  // Settings are then corrected once the real values arrive.
+  // Fallback until settings-preload.js answers the handshake below; it sends
+  // the shared defaults synchronously, then the stored settings.
   let settings = {
-    blockExfil: false,
+    blockExfil: true,
     antiFingerprint: true,
     formSpy: true,
     antiMiner: true,
@@ -21,52 +20,31 @@
     antiKeylogger: true,
     antiTabNapping: true,
     clipboardGuard: true,
-    blockJavascriptUrls: true,
+    blockJavascriptUrls: false,
     blockDataIframes: true
   };
 
-  // Secure settings channel: accept only the FIRST TG_SETTINGS message.
-  let _settingsLocked = false;
+  // Private channel to the ISOLATED world (see settings-preload.js). This runs
+  // before any page script, so the page can't learn the channel name or have
+  // patched the DOM primitives captured here.
+  const _addEventListener = EventTarget.prototype.addEventListener;
+  const _dispatchEvent = EventTarget.prototype.dispatchEvent;
+  const _CustomEvent = CustomEvent;
+  const _stringify = JSON.stringify;
+  const _parse = JSON.parse;
+  const CHANNEL = 'bastion:' + (crypto.randomUUID
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join(''));
 
-  // Try to load from DOM attribute (set by settings-preload.js)
-  try {
-    const preload = document.documentElement.dataset.tgSettings;
-    if (preload) {
-      const parsed = JSON.parse(preload);
-      settings = { ...settings, ...parsed };
-      _settingsLocked = true;
-      document.documentElement.removeAttribute('data-tg-settings');
-    }
-  } catch {}
-
-  // If attribute wasn't ready, watch for it + listen for postMessage
-  if (!_settingsLocked) {
-    const _attrObserver = new MutationObserver(() => {
-      try {
-        const preload = document.documentElement.dataset.tgSettings;
-        if (preload) {
-          const parsed = JSON.parse(preload);
-          if (!_settingsLocked) {
-            settings = { ...settings, ...parsed };
-            _settingsLocked = true;
-          }
-          document.documentElement.removeAttribute('data-tg-settings');
-          _attrObserver.disconnect();
-        }
-      } catch {}
-    });
-    _attrObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-tg-settings'] });
-    setTimeout(() => _attrObserver.disconnect(), 3000);
-  }
-
-  window.addEventListener('message', (event) => {
-    if (event.source !== window) return;
-    if (event.data && event.data.type === 'TG_SETTINGS') {
-      if (_settingsLocked) return;
-      _settingsLocked = true;
-      settings = { ...settings, ...event.data };
-    }
+  _addEventListener.call(document, CHANNEL + ':settings', (e) => {
+    try {
+      const incoming = _parse(e.detail);
+      for (const k of Object.keys(settings)) {
+        if (typeof incoming[k] === 'boolean') settings[k] = incoming[k];
+      }
+    } catch {}
   });
+  _dispatchEvent.call(document, new _CustomEvent('bastion:hello', { detail: CHANNEL }));
 
   function getBaseDomain(hostname) {
     const parts = hostname.split('.');
@@ -83,7 +61,9 @@
   }
 
   function notify(type, detail) {
-    window.postMessage({ type, ...detail }, '*');
+    try {
+      _dispatchEvent.call(document, new _CustomEvent(CHANNEL + ':event', { detail: _stringify({ ...detail, type }) }));
+    } catch {}
   }
 
   function alertExfil(method, url, where) {

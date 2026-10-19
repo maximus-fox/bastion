@@ -26,6 +26,11 @@ export default [
     languageOptions: { globals: { ...globals.serviceworker, ...globals.webextensions } },
   },
   {
+    // defined in defaults.js, loaded before these scripts
+    files: ['background.js', 'content.js', 'settings-preload.js', 'popup.js', 'warning.js'],
+    languageOptions: { globals: { DEFAULT_SETTINGS: 'readonly' } },
+  },
+  {
     // popup.html loads i18n.js before popup.js
     files: ['popup.js'],
     languageOptions: {
@@ -37,8 +42,8 @@ export default [
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: globals.node },
   },
   {
-    // page.evaluate() callbacks run in the browser
+    // page.evaluate() / sw() callbacks run in the browser or the service worker
     files: ['tests/**/*.mjs'],
-    languageOptions: { globals: globals.browser },
+    languageOptions: { globals: { ...globals.browser, ...globals.webextensions, migrateSettings: 'readonly' } },
   },
 ];

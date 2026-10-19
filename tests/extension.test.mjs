@@ -2,42 +2,25 @@
 // service worker starts, popup renders without errors, content scripts run.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { chromium } from 'playwright';
-import { ROOT } from './helpers.mjs';
+import { launchExtension } from './harness.mjs';
 
-let context, server, extensionId, pageUrl;
+let ext;
 
 before(async () => {
-  server = createServer((req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html' });
-    res.end('<!doctype html><title>fixture</title><p>hello</p>');
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  pageUrl = `http://127.0.0.1:${server.address().port}/`;
-
-  context = await chromium.launchPersistentContext('', {
-    channel: 'chromium', // new headless mode, which supports extensions
-    args: [`--disable-extensions-except=${ROOT}`, `--load-extension=${ROOT}`],
-  });
-  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
-  extensionId = new URL(sw.url()).host;
+  ext = await launchExtension({ '/': '<!doctype html><title>fixture</title><p>hello</p>' });
 });
 
-after(async () => {
-  await context?.close();
-  server?.close();
-});
+after(() => ext?.close());
 
 test('service worker starts', () => {
-  assert.match(extensionId, /^[a-p]{32}$/);
+  assert.match(ext.extensionId, /^[a-p]{32}$/);
 });
 
 test('popup renders without page errors', async () => {
-  const page = await context.newPage();
+  const page = await ext.context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto(`chrome-extension://${extensionId}/popup.html`);
+  await page.goto(ext.extensionUrl('popup.html'));
   await page.locator('#tabScanner').waitFor();
   await page.waitForTimeout(500);
   assert.deepEqual(errors, []);
@@ -45,20 +28,22 @@ test('popup renders without page errors', async () => {
 });
 
 test('content scripts run on a regular page', async () => {
-  const page = await context.newPage();
-  // Record the settings message content.js (ISOLATED world) posts to injected.js
-  await page.addInitScript(() => {
-    window.addEventListener('message', (e) => {
-      if (e.data?.type === 'TG_SETTINGS') window.__tgSettings = e.data;
-    });
-  });
-  await page.goto(pageUrl);
-  const settings = await (await page.waitForFunction(() => window.__tgSettings)).jsonValue();
-  assert.equal(typeof settings.antiFingerprint, 'boolean');
+  const page = await ext.context.newPage();
+  await page.goto(ext.url('/'));
   // injected.js (MAIN world) wraps XHR for anti-exfiltration
   const xhrPatched = await page.evaluate(
     () => !Function.prototype.toString.call(XMLHttpRequest.prototype.open).includes('[native code]'),
   );
   assert.ok(xhrPatched, 'injected.js did not patch XMLHttpRequest.prototype.open');
+  // content.js (ISOLATED world) reports its storage scan to the service worker
+  const history = await ext.sw(async () => {
+    for (let i = 0; i < 50; i++) {
+      const { history = [] } = await chrome.storage.local.get('history');
+      if (history.length) return history;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return [];
+  });
+  assert.ok(history.length > 0, 'content.js autoScan did not report to background');
   await page.close();
 });
