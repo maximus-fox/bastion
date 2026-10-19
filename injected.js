@@ -1,5 +1,5 @@
 /**
- * TokenGuard — Injected Script (MAIN world)
+ * Bastion — Injected Script (MAIN world)
  * Anti-exfil, anti-fingerprint, form spy, anti-miner
  */
 
@@ -72,7 +72,6 @@
       url: String(url).substring(0, 200), where,
       timestamp: Date.now(), blocked: settings.blockExfil
     };
-    console.log(`[Bastion] ${settings.blockExfil ? 'BLOCKED' : 'Detected'} token exfiltration`, detail);
     notify('TG_EXFIL_ALERT', detail);
     return settings.blockExfil;
   }
@@ -145,13 +144,13 @@
     if (tokens.size === 0) return false;
     for (const token of tokens) {
       if (str.includes(token)) return true;
-      // Anti-chunking: check if a significant portion of the token is in the string
-      // JWT has 3 parts separated by dots. If any FULL part is in a cross-origin request, flag it.
+      // Anti-chunking: a full payload or signature part of the token in a
+      // cross-origin request counts too. The header (part 0) is skipped: it is
+      // identical for every token signed with the same algorithm.
       if (token.length > 50) {
         const parts = token.split('.');
-        for (const part of parts) {
-          // JWT header (part[0]) is often generic, so only check payload+signature (parts[1], parts[2])
-          if (part.length > 20 && str.includes(part)) return true;
+        for (let i = 1; i < parts.length; i++) {
+          if (parts[i].length > 20 && str.includes(parts[i])) return true;
         }
       }
     }
@@ -208,10 +207,14 @@
         let block = false;
         // Check URL for stored tokens
         if (containsStoredToken(url)) block = alertExfil('fetch', url, 'url') || block;
-        // Check headers for stored tokens
+        // Check headers for stored tokens. Authorization is skipped: sending the
+        // session token to the app's own API on another domain (Supabase,
+        // Firebase, Auth0, ...) is the normal SPA pattern, not exfiltration.
         if (init && init.headers) {
           const hs = typeof init.headers === 'object'
-            ? JSON.stringify(Object.fromEntries(init.headers instanceof Headers ? init.headers.entries() : Object.entries(init.headers)))
+            ? JSON.stringify(Object.fromEntries(
+              [...(init.headers instanceof Headers ? init.headers.entries() : Object.entries(init.headers))]
+                .filter(([k]) => String(k).toLowerCase() !== 'authorization')))
             : String(init.headers);
           if (containsStoredToken(hs)) block = alertExfil('fetch', url, 'headers') || block;
         }
@@ -249,7 +252,8 @@
     return origOpen.apply(this, arguments);
   };
   XMLHttpRequest.prototype.setRequestHeader = function (n, v) {
-    if (this._tgCross) this._tgH += n + ':' + v + '\n';
+    // Authorization skipped for the same reason as in fetch()
+    if (this._tgCross && String(n).toLowerCase() !== 'authorization') this._tgH += n + ':' + v + '\n';
     return origSetH.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function (body) {
@@ -267,106 +271,42 @@
   };
 
   // =============================================
-  // 2. ANTI-FINGERPRINT (Canvas, WebGL, AudioContext)
+  // 2. ANTI-FINGERPRINT (Canvas, WebGL, AudioContext, hardware)
   // =============================================
+  // Patches are installed unconditionally and check settings.antiFingerprint at
+  // call time, so toggling it in the popup applies without a reload and the
+  // real values come back while it is off.
   let fpCount = 0;
+  const _fpReported = new Set();
 
   function reportFingerprint(method) {
     fpCount++;
+    // One event per API per page: fingerprinting scripts call these in loops.
+    if (_fpReported.has(method)) return;
+    _fpReported.add(method);
     notify('TG_FINGERPRINT', { method, count: fpCount, timestamp: Date.now() });
   }
 
-  // Auto-add willReadFrequently to all 2d canvas contexts
-  const origGetContext = HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    if (type === '2d') {
-      attrs = Object.assign({}, attrs || {}, { willReadFrequently: true });
-    }
-    return origGetContext.call(this, type, attrs);
-  };
-
-  // Canvas fingerprint protection — inject noise into non-transparent pixels
-  let _inNoiseInjection = false; // prevent recursion between addCanvasNoise and getImageData patch
-  function addCanvasNoise(canvas) {
-    try {
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) return;
-      const w = Math.min(canvas.width, 64);
-      const h = Math.min(canvas.height, 64);
-      _inNoiseInjection = true;
-      const img = ctx.getImageData(0, 0, w, h);
-      _inNoiseInjection = false;
-      const d = img.data;
-      let modified = 0;
-      // Walk pixels, find non-transparent ones and add subtle noise
-      for (let i = 0; i < d.length && modified < 10; i += 4) {
-        if (d[i + 3] > 0) { // alpha > 0 — visible pixel
-          const channel = i + (modified % 3); // rotate R, G, B
-          const noise = 1 + Math.floor(Math.random() * 2); // 1 or 2
-          d[channel] = (d[channel] + noise) % 256;
-          modified++;
-        }
-      }
-      if (modified > 0) {
-        ctx.putImageData(img, 0, 0);
-      }
-    } catch {}
+  // Noise depends only on a per-page seed and the pixel position, so the same
+  // canvas content always gives the same output during a page load; random
+  // per-call noise would itself be a detectable signal.
+  const _fpSeed = crypto.getRandomValues(new Uint32Array(1))[0];
+  function noiseAt(i) {
+    let x = (i ^ _fpSeed) >>> 0;
+    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+    return 1 + ((x ^ (x >>> 16)) & 1); // 1 or 2
   }
-
-  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function () {
-    if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
-      addCanvasNoise(this);
-      reportFingerprint('canvas.toDataURL');
-    }
-    return origToDataURL.apply(this, arguments);
-  };
-
-  const origToBlob = HTMLCanvasElement.prototype.toBlob;
-  HTMLCanvasElement.prototype.toBlob = function () {
-    if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
-      addCanvasNoise(this);
-      reportFingerprint('canvas.toBlob');
-    }
-    return origToBlob.apply(this, arguments);
-  };
-
-  // getImageData fingerprint protection — sites hash raw pixels instead of toDataURL
-  const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-  CanvasRenderingContext2D.prototype.getImageData = function () {
-    const imageData = origGetImageData.apply(this, arguments);
-    if (!_inNoiseInjection && settings.antiFingerprint && imageData && imageData.data && imageData.data.length > 0) {
-      const d = imageData.data;
-      let modified = 0;
-      for (let i = 0; i < d.length && modified < 10; i += 4) {
-        if (d[i + 3] > 0) {
-          const channel = i + (modified % 3);
-          d[channel] = (d[channel] + 1 + Math.floor(Math.random() * 2)) % 256;
-          modified++;
-        }
+  function applyPixelNoise(d) {
+    let modified = 0;
+    for (let i = 0; i < d.length && modified < 10; i += 4) {
+      if (d[i + 3] > 0) { // visible pixel
+        const ch = i + (modified % 3); // rotate R, G, B
+        d[ch] = (d[ch] + noiseAt(i)) % 256;
+        modified++;
       }
     }
-    return imageData;
-  };
-
-  // OffscreenCanvas fingerprint protection
-  if (typeof OffscreenCanvas !== 'undefined') {
-    const origOCToBlob = OffscreenCanvas.prototype.convertToBlob;
-    if (origOCToBlob) {
-      OffscreenCanvas.prototype.convertToBlob = function () {
-        if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
-          try {
-            const ctx = this.getContext('2d');
-            if (ctx) {
-              const img = ctx.getImageData(0, 0, Math.min(this.width, 64), Math.min(this.height, 64));
-              // noise already injected by getImageData patch above
-            }
-          } catch {}
-          reportFingerprint('offscreen.convertToBlob');
-        }
-        return origOCToBlob.apply(this, arguments);
-      };
-    }
+    return modified;
   }
 
   // WebGL fingerprint protection — random GPU profile per session
@@ -401,7 +341,7 @@
   const _gpuSet = _platform.includes('Mac') ? GPU_BY_PLATFORM.mac
     : _platform.includes('Linux') ? GPU_BY_PLATFORM.linux
     : GPU_BY_PLATFORM.win;
-  const _gpuProfile = _gpuSet[Math.floor(Math.random() * _gpuSet.length)];
+  const _gpuProfile = _gpuSet[_fpSeed % _gpuSet.length];
 
   // WebGL hardware param spoofing map
   const _glParamSpoof = {
@@ -421,88 +361,127 @@
   };
   _glParamSpoof[0x8B4D] = 32;            // MAX_COMBINED = vertex + fragment
 
-  const origGetParam = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function (param) {
-    if (settings.antiFingerprint && param in _glParamSpoof) {
-      reportFingerprint('webgl.param.' + param.toString(16));
-      return _glParamSpoof[param];
-    }
-    return origGetParam.apply(this, arguments);
-  };
+  const _createElement = Document.prototype.createElement;
+  const origGetContext = HTMLCanvasElement.prototype.getContext;
+  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  const origToBlob = HTMLCanvasElement.prototype.toBlob;
+  const origDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+  const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  const origPutImageData = CanvasRenderingContext2D.prototype.putImageData;
 
-  // WebGL2
-  if (window.WebGL2RenderingContext) {
-    const origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
-    WebGL2RenderingContext.prototype.getParameter = function (param) {
-      if (settings.antiFingerprint && param in _glParamSpoof) {
-        reportFingerprint('webgl2.param.' + param.toString(16));
-        return _glParamSpoof[param];
-      }
-      return origGetParam2.apply(this, arguments);
-    };
-  }
-
-  // WebGL readPixels noise — changes WebGL image hash
-  const origReadPixels = WebGLRenderingContext.prototype.readPixels;
-  WebGLRenderingContext.prototype.readPixels = function () {
-    origReadPixels.apply(this, arguments);
-    if (settings.antiFingerprint && arguments[6] && arguments[6].length) {
-      const pixels = arguments[6];
-      for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i + 3] > 0) pixels[i] = (pixels[i] + 1) & 0xFF;
-      }
-    }
-  };
-  if (window.WebGL2RenderingContext) {
-    const origReadPixels2 = WebGL2RenderingContext.prototype.readPixels;
-    WebGL2RenderingContext.prototype.readPixels = function () {
-      origReadPixels2.apply(this, arguments);
-      if (settings.antiFingerprint && arguments[6] && arguments[6].length) {
-        const pixels = arguments[6];
-        for (let i = 0; i < pixels.length; i += 4) {
-          if (pixels[i + 3] > 0) pixels[i] = (pixels[i] + 1) & 0xFF;
-        }
-      }
-    };
-  }
-
-  // Hardware fingerprint protection — spoof CPU, RAM, screen, color depth
-  if (settings.antiFingerprint) {
-    // CPU cores: random 4 or 8
-    const fakeCores = [4, 8][Math.floor(Math.random() * 2)];
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => fakeCores });
-
-    // Device memory: 8 GB (most common)
-    if ('deviceMemory' in navigator) {
-      Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-    }
-
-    // Screen resolution: spoof to common 1920x1080
-    const fakeScreen = { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 };
-    for (const [key, val] of Object.entries(fakeScreen)) {
-      try { Object.defineProperty(screen, key, { get: () => val }); } catch {}
-    }
-
-    // Window inner/outer size — consistent with spoofed screen
+  // Noised copy of a canvas for export; the page's own canvas is never touched.
+  // null means "export the original": protection off, empty canvas, or a
+  // tainted one (the original call then throws exactly as it would natively).
+  function noisyCopy(canvas) {
+    if (!settings.antiFingerprint || !(canvas.width > 0 && canvas.height > 0)) return null;
     try {
-      Object.defineProperty(window, 'outerWidth', { get: () => 1920 });
-      Object.defineProperty(window, 'outerHeight', { get: () => 1040 });
-    } catch {}
+      const copy = _createElement.call(document, 'canvas');
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      const ctx = origGetContext.call(copy, '2d');
+      origDrawImage.call(ctx, canvas, 0, 0);
+      const img = origGetImageData.call(ctx, 0, 0, Math.min(copy.width, 64), Math.min(copy.height, 64));
+      if (applyPixelNoise(img.data) > 0) origPutImageData.call(ctx, img, 0, 0);
+      return copy;
+    } catch { return null; }
   }
+
+  // Canvas + WebGL patches for a window (the page itself and same-origin iframes).
+  function patchCanvasApis(win) {
+    const canvasProto = win.HTMLCanvasElement.prototype;
+    const toDataURL = canvasProto.toDataURL;
+    const toBlob = canvasProto.toBlob;
+    canvasProto.toDataURL = function () {
+      const copy = noisyCopy(this);
+      if (!copy) return toDataURL.apply(this, arguments);
+      reportFingerprint('canvas.toDataURL');
+      return origToDataURL.apply(copy, arguments);
+    };
+    canvasProto.toBlob = function () {
+      const copy = noisyCopy(this);
+      if (!copy) return toBlob.apply(this, arguments);
+      reportFingerprint('canvas.toBlob');
+      return origToBlob.apply(copy, arguments);
+    };
+
+    // Sites also hash raw pixels; getImageData returns a fresh copy, so noising it is safe.
+    for (const Ctx of [win.CanvasRenderingContext2D, win.OffscreenCanvasRenderingContext2D]) {
+      if (!Ctx) continue;
+      const getImageData = Ctx.prototype.getImageData;
+      Ctx.prototype.getImageData = function () {
+        const imageData = getImageData.apply(this, arguments);
+        if (settings.antiFingerprint && imageData && imageData.data && imageData.data.length > 0) {
+          applyPixelNoise(imageData.data);
+          reportFingerprint('canvas.getImageData');
+        }
+        return imageData;
+      };
+    }
+
+    for (const GL of [win.WebGLRenderingContext, win.WebGL2RenderingContext]) {
+      if (!GL) continue;
+      const getParameter = GL.prototype.getParameter;
+      GL.prototype.getParameter = function (param) {
+        if (settings.antiFingerprint && param in _glParamSpoof) {
+          reportFingerprint('webgl.param.' + Number(param).toString(16));
+          const fake = _glParamSpoof[param];
+          if (typeof fake !== 'number') return fake;
+          // Never report limits above what the GPU supports: apps size buffers
+          // and textures from these and fail with INVALID_VALUE otherwise.
+          const real = getParameter.apply(this, arguments);
+          return typeof real === 'number' ? Math.min(real, fake) : real;
+        }
+        return getParameter.apply(this, arguments);
+      };
+    }
+  }
+  patchCanvasApis(window);
+
+  if (typeof OffscreenCanvas !== 'undefined' && OffscreenCanvas.prototype.convertToBlob) {
+    const origOCToBlob = OffscreenCanvas.prototype.convertToBlob;
+    OffscreenCanvas.prototype.convertToBlob = function () {
+      if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
+        try {
+          const copy = new OffscreenCanvas(this.width, this.height);
+          const ctx = copy.getContext('2d');
+          ctx.drawImage(this, 0, 0);
+          const img = ctx.getImageData(0, 0, Math.min(copy.width, 64), Math.min(copy.height, 64)); // noised by the patch above
+          ctx.putImageData(img, 0, 0);
+          reportFingerprint('offscreen.convertToBlob');
+          return origOCToBlob.apply(copy, arguments);
+        } catch {}
+      }
+      return origOCToBlob.apply(this, arguments);
+    };
+  }
+
+  // Hardware: CPU cores, RAM, screen. Patched on the prototypes rather than as
+  // own properties of navigator/screen.
+  function spoofGetter(target, prop, fake) {
+    const desc = Object.getOwnPropertyDescriptor(target, prop);
+    if (!desc || !desc.get) return;
+    const realGet = desc.get;
+    Object.defineProperty(target, prop, {
+      ...desc,
+      get() { return settings.antiFingerprint ? fake : realGet.call(this); }
+    });
+  }
+  spoofGetter(Navigator.prototype, 'hardwareConcurrency', [4, 8][_fpSeed & 1]);
+  spoofGetter(Navigator.prototype, 'deviceMemory', 8); // most common value
+  const fakeScreen = { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 };
+  for (const [key, val] of Object.entries(fakeScreen)) spoofGetter(Screen.prototype, key, val);
+  // Window outer size — consistent with the spoofed screen
+  spoofGetter(window, 'outerWidth', 1920);
+  spoofGetter(window, 'outerHeight', 1040);
 
   // AudioContext fingerprint protection
-  if (window.AudioContext || window.webkitAudioContext) {
-    const ACtx = window.AudioContext || window.webkitAudioContext;
-    const origCreateOscillator = ACtx.prototype.createOscillator;
-    const origCreateAnalyser = ACtx.prototype.createAnalyser;
-
-    // Отслеживаем создание AudioContext для fingerprinting
+  if (window.AnalyserNode) {
+    const audioNoise = ((_fpSeed % 1000) / 1000 - 0.5) * 0.0001;
     const origGetFloatFreq = AnalyserNode.prototype.getFloatFrequencyData;
     AnalyserNode.prototype.getFloatFrequencyData = function (arr) {
       const result = origGetFloatFreq.apply(this, arguments);
       if (settings.antiFingerprint && arr && arr.length > 0) {
-        // Добавляем микро-шум
-        arr[0] += (Math.random() - 0.5) * 0.0001;
+        arr[0] += audioNoise;
         reportFingerprint('audio.frequencyData');
       }
       return result;
@@ -544,7 +523,6 @@
         fields: sensitiveTypes,
         timestamp: Date.now()
       };
-      console.log('[Bastion] BLOCKED form with sensitive data submitting to cross-origin!', detail);
       notify('TG_FORM_BLOCK', detail);
     }
   }, true);
@@ -561,7 +539,6 @@
           const type = (inp.type || '').toLowerCase();
           const name = (inp.name || '').toLowerCase();
           if (type === 'password' || name.includes('card') || name.includes('cvv') || name.includes('ssn')) {
-            console.log('[Bastion] BLOCKED form.submit() with sensitive data to cross-origin!', action);
             notify('TG_FORM_BLOCK', { action: action.substring(0, 200), fields: [type || name], timestamp: Date.now() });
             return; // block
           }
@@ -587,44 +564,28 @@
     /deepminer/i, /coinimp/i, /crypto-?loot/i
   ];
 
-  const OrigWorker = window.Worker;
-  window.Worker = function (url, opts) {
-    const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : '';
-
-    if (settings.antiMiner) {
-      for (const pat of MINER_PATTERNS) {
-        if (pat.test(urlStr)) {
-          console.log('[Bastion] BLOCKED crypto miner Worker!', urlStr);
-          notify('TG_MINER_BLOCK', { url: urlStr, timestamp: Date.now() });
-          // Возвращаем dummy worker
-          const blob = new Blob([''], { type: 'application/javascript' });
-          return new OrigWorker(URL.createObjectURL(blob), opts);
-        }
-      }
-    }
-    return new OrigWorker(url, opts);
-  };
-  window.Worker.prototype = OrigWorker.prototype;
-
-  // Также проверяем SharedWorker
-  if (window.SharedWorker) {
-    const OrigSharedWorker = window.SharedWorker;
-    window.SharedWorker = function (url, opts) {
-      const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : '';
-      if (settings.antiMiner) {
-        for (const pat of MINER_PATTERNS) {
-          if (pat.test(urlStr)) {
-            console.log('[Bastion] BLOCKED crypto miner SharedWorker!', urlStr);
-            notify('TG_MINER_BLOCK', { url: urlStr, timestamp: Date.now() });
-            const blob = new Blob([''], { type: 'application/javascript' });
-            return new OrigSharedWorker(URL.createObjectURL(blob), opts);
-          }
-        }
-      }
-      return new OrigSharedWorker(url, opts);
-    };
-    window.SharedWorker.prototype = OrigSharedWorker.prototype;
+  // Constructors are wrapped with a Proxy: statics, prototype, `new.target`
+  // (subclasses) and the "requires new" check keep working as natively.
+  function wrapConstructor(name, construct) {
+    const Orig = window[name];
+    if (typeof Orig !== 'function') return null;
+    window[name] = new Proxy(Orig, { construct: (target, args, newTarget) => construct(target, args, newTarget) });
+    return Orig;
   }
+
+  function minerWorker(target, args, newTarget) {
+    const url = args[0];
+    const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : '';
+    if (settings.antiMiner && MINER_PATTERNS.some((pat) => pat.test(urlStr))) {
+      notify('TG_MINER_BLOCK', { url: urlStr, timestamp: Date.now() });
+      // Hand back an inert worker so the page's code keeps running
+      const blob = new Blob([''], { type: 'application/javascript' });
+      return Reflect.construct(target, [URL.createObjectURL(blob), args[1]], newTarget);
+    }
+    return Reflect.construct(target, args, newTarget);
+  }
+  wrapConstructor('Worker', minerWorker);
+  wrapConstructor('SharedWorker', minerWorker);
 
   // =============================================
   // 5a. ANTI-EXFIL: navigator.sendBeacon
@@ -638,11 +599,15 @@
           const block = alertExfil('sendBeacon', url, dataStr ? 'body' : 'url');
           if (block) return false;
         }
-        // Blob body — sendBeacon is sync so we can't async-read Blob,
-        // but we can block ALL cross-origin sendBeacon with Blob body when blockExfil is on
-        if (data instanceof Blob && settings.blockExfil && getStoredTokens().size > 0) {
-          alertExfil('sendBeacon', url, 'body(blob)');
-          return false;
+        // Blob bodies can't be read synchronously: queue the beacon after an
+        // async check instead of dropping every Blob beacon (analytics, RUM).
+        if (data instanceof Blob && getStoredTokens().size > 0) {
+          const args = arguments;
+          blobContainsToken(data).then((hasToken) => {
+            if (hasToken && alertExfil('sendBeacon', url, 'body(blob)')) return;
+            origSendBeacon.apply(navigator, args);
+          });
+          return true;
         }
       }
     } catch {}
@@ -653,48 +618,33 @@
   // 5b. ANTI-EXFIL: WebSocket
   // =============================================
   if (window.WebSocket) {
-    const OrigWebSocket = window.WebSocket;
-    const origWsSend = OrigWebSocket.prototype.send;
-
-    window.WebSocket = function (url, protocols) {
-      const ws = new OrigWebSocket(url, protocols);
-      const wsUrl = String(url);
-      const isCross = isCrossOrigin(wsUrl.replace(/^wss?:/, 'https:'));
-
-      if (isCross) {
-        // Check URL itself
-        if (containsStoredToken(wsUrl)) {
-          alertExfil('websocket', wsUrl, 'url');
-        }
-        // Intercept send to check outgoing data (string, ArrayBuffer, Blob)
-        const _origSend = ws.send.bind(ws);
-        ws.send = function (data) {
-          try {
-            let dataStr = '';
-            if (typeof data === 'string') dataStr = data;
-            else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-              try { dataStr = new TextDecoder().decode(data); } catch {}
-            }
-            if (dataStr && containsStoredToken(dataStr)) {
-              const block = alertExfil('websocket', wsUrl, 'body');
-              if (block) return; // silently drop
-            }
-            // Blob — can't read sync, but block large Blobs to suspicious WS when blockExfil is on
-            if (data instanceof Blob && settings.blockExfil && getStoredTokens().size > 0 && data.size > 20) {
-              alertExfil('websocket', wsUrl, 'body(blob)');
-              return; // block all Blob sends on cross-origin WS when tokens exist
-            }
-          } catch {}
-          return _origSend(data);
-        };
+    const crossSockets = new WeakMap(); // socket → URL, for cross-origin sockets only
+    wrapConstructor('WebSocket', (target, args, newTarget) => {
+      const ws = Reflect.construct(target, args, newTarget);
+      const wsUrl = String(args[0]);
+      if (isCrossOrigin(wsUrl.replace(/^ws(s?):/, 'http$1:'))) {
+        crossSockets.set(ws, wsUrl);
+        if (containsStoredToken(wsUrl)) alertExfil('websocket', wsUrl, 'url');
       }
       return ws;
+    });
+    const origWsSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      const wsUrl = crossSockets.get(this);
+      if (wsUrl) {
+        try {
+          let dataStr = '';
+          if (typeof data === 'string') dataStr = data;
+          else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+            try { dataStr = new TextDecoder().decode(data); } catch {}
+          }
+          // Blobs can't be read synchronously and delaying them would reorder
+          // the stream, so they pass unchecked.
+          if (dataStr && containsStoredToken(dataStr) && alertExfil('websocket', wsUrl, 'body')) return;
+        } catch {}
+      }
+      return origWsSend.apply(this, arguments);
     };
-    window.WebSocket.prototype = OrigWebSocket.prototype;
-    window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
-    window.WebSocket.OPEN = OrigWebSocket.OPEN;
-    window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
-    window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
   }
 
   // =============================================
@@ -743,36 +693,52 @@
   patchHrefSetter(HTMLLinkElement.prototype, 'link');
   patchHrefSetter(HTMLAnchorElement.prototype, 'a');
 
-  // Also catch setAttribute('src', ...)
+  // javascript: URLs that do nothing — the usual href of links driven by
+  // click handlers. They are never blocked or rewritten.
+  const NOOP_JS_URL = /^javascript:\s*(void\s*\(?\s*0\s*\)?\s*;?|;)?\s*$/i;
+  function isBlockedJsUrl(value) {
+    if (!settings.blockJavascriptUrls) return false;
+    const v = String(value).trim();
+    return /^javascript:/i.test(v) && !NOOP_JS_URL.test(v);
+  }
+
+  // data: documents in iframes are a phishing vector; blob: URLs are always
+  // same-origin (PDF previews, editors) and data: images/PDFs are inert.
+  const HTML_LIKE_DATA = ['', 'text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml'];
+  function isBlockedIframeSrc(value) {
+    if (!settings.blockDataIframes) return false;
+    const v = String(value).trim().toLowerCase();
+    if (!v.startsWith('data:')) return false;
+    return HTML_LIKE_DATA.includes(v.slice(5).split(/[;,]/)[0].trim());
+  }
+
+  function reportBlockedIframe(src) {
+    notify('TG_DATA_IFRAME_BLOCK', { type: 'TG_DATA_IFRAME_BLOCK', src: String(src).substring(0, 100), timestamp: Date.now() });
+  }
+
+  // Also catch setAttribute('src' | 'href', ...)
   const origSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name, value) {
     try {
-      if (name === 'src' || name === 'href') {
+      const attr = String(name).toLowerCase();
+      if (attr === 'src' || attr === 'href') {
+        if (attr === 'href' && isBlockedJsUrl(value)) {
+          notify('TG_JS_URL_BLOCK', { type: 'TG_JS_URL_BLOCK', url: String(value).substring(0, 100), timestamp: Date.now() });
+          return origSetAttribute.call(this, name, '#');
+        }
+        if (attr === 'src' && this.tagName === 'IFRAME' && isBlockedIframeSrc(value)) {
+          reportBlockedIframe(value);
+          return;
+        }
         const url = String(value);
-        // Block javascript: URLs via setAttribute
-        if (name === 'href' && settings.blockJavascriptUrls
-            && typeof value === 'string' && value.trim().toLowerCase().startsWith('javascript:')) {
-          return origSetAttribute.call(this, 'href', '#');
-        }
-        // Block data:/blob: iframe src via setAttribute
-        if (name === 'src' && this.tagName === 'IFRAME' && settings.blockDataIframes) {
-          const v = String(value).trim().toLowerCase();
-          if ((v.startsWith('data:') || v.startsWith('blob:'))
-              && !v.startsWith('data:image/') && !v.startsWith('data:application/pdf')) {
-            notify('TG_DATA_IFRAME_BLOCK', {
-              type: 'TG_DATA_IFRAME_BLOCK', src: value.substring(0, 100), timestamp: Date.now()
-            });
-            return;
-          }
-        }
         if (isCrossOrigin(url) && containsStoredToken(url)) {
           const tag = this.tagName ? this.tagName.toLowerCase() : 'unknown';
-          const block = alertExfil(tag + '.' + name, url, 'url');
-          if (block) return;
+          if (alertExfil(tag + '.' + attr, url, 'url')) return;
         }
       }
     } catch {}
-    try { return origSetAttribute.apply(this, arguments); } catch {};
+    // outside the try: errors of the native call (e.g. invalid names) must reach the caller
+    return origSetAttribute.apply(this, arguments);
   };
 
   // =============================================
@@ -798,7 +764,6 @@
     }
     // Block iframe srcdoc that contains scripts reading storage (clean API bypass)
     if (/srcdoc\s*=\s*["'][^"']*(?:localStorage|sessionStorage|document\.cookie|parent\.|top\.)/i.test(html)) {
-      console.log('[Bastion] Blocked iframe srcdoc with storage access (clean API bypass)');
       notify('TG_EXFIL_ALERT', {
         type: 'TG_EXFIL_ALERT', method: 'iframe.srcdoc', url: location.href,
         where: 'srcdoc', timestamp: Date.now(), blocked: settings.blockExfil
@@ -923,7 +888,6 @@
       ...srcdocDesc,
       set(val) {
         if (typeof val === 'string' && /(?:localStorage|sessionStorage|document\.cookie|parent\.|top\.)/i.test(val)) {
-          console.log('[Bastion] Blocked iframe srcdoc with storage access');
           notify('TG_EXFIL_ALERT', {
             type: 'TG_EXFIL_ALERT', method: 'iframe.srcdoc', url: location.href,
             where: 'srcdoc', timestamp: Date.now(), blocked: settings.blockExfil
@@ -936,103 +900,19 @@
   }
 
   // Patch iframes added to DOM via MutationObserver — catches ALL iframes regardless of creation method
+  // Each same-origin iframe realm gets its own clean copies of the APIs patched
+  // above; patch every realm once (re-patching would stack wrappers). Keyed by
+  // the realm's Object: a navigation from the initial about:blank may reuse the
+  // Window but always resets the realm otherwise.
+  const _patchedRealms = new WeakSet();
   function patchIframeApis(iframe) {
     try {
-      if (!iframe.contentWindow) return;
+      if (!iframe.contentDocument) return; // cross-origin
+      const win = iframe.contentWindow;
+      if (!win || _patchedRealms.has(win.Object)) return;
+      _patchedRealms.add(win.Object);
 
-      // Patch getContext inside iframe to auto-add willReadFrequently
-      try {
-        const iframeCanvas = iframe.contentWindow.HTMLCanvasElement;
-        if (iframeCanvas && iframeCanvas.prototype) {
-          const iOrigGetContext = iframeCanvas.prototype.getContext;
-          iframeCanvas.prototype.getContext = function (type, attrs) {
-            if (type === '2d') {
-              attrs = Object.assign({}, attrs || {}, { willReadFrequently: true });
-            }
-            return iOrigGetContext.call(this, type, attrs);
-          };
-
-          const iOrigToDataURL = iframeCanvas.prototype.toDataURL;
-          iframeCanvas.prototype.toDataURL = function () {
-            if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
-              try {
-                const ctx = this.getContext('2d', { willReadFrequently: true });
-                if (ctx) {
-                  const w = Math.min(this.width, 64);
-                  const h = Math.min(this.height, 64);
-                  const img = ctx.getImageData(0, 0, w, h);
-                  const d = img.data;
-                  let mod = 0;
-                  for (let i = 0; i < d.length && mod < 10; i += 4) {
-                    if (d[i + 3] > 0) {
-                      d[i + (mod % 3)] = (d[i + (mod % 3)] + 1 + Math.floor(Math.random() * 2)) % 256;
-                      mod++;
-                    }
-                  }
-                  if (mod > 0) ctx.putImageData(img, 0, 0);
-                }
-              } catch {}
-              reportFingerprint('iframe.canvas.toDataURL');
-            }
-            return iOrigToDataURL.apply(this, arguments);
-          };
-
-          const iOrigToBlob = iframeCanvas.prototype.toBlob;
-          iframeCanvas.prototype.toBlob = function () {
-            if (settings.antiFingerprint && this.width > 0 && this.height > 0) {
-              try {
-                const ctx = this.getContext('2d', { willReadFrequently: true });
-                if (ctx) {
-                  const w = Math.min(this.width, 64);
-                  const h = Math.min(this.height, 64);
-                  const img = ctx.getImageData(0, 0, w, h);
-                  const d = img.data;
-                  let mod = 0;
-                  for (let i = 0; i < d.length && mod < 10; i += 4) {
-                    if (d[i + 3] > 0) {
-                      d[i + (mod % 3)] = (d[i + (mod % 3)] + 1 + Math.floor(Math.random() * 2)) % 256;
-                      mod++;
-                    }
-                  }
-                  if (mod > 0) ctx.putImageData(img, 0, 0);
-                }
-              } catch {}
-              reportFingerprint('iframe.canvas.toBlob');
-            }
-            return iOrigToBlob.apply(this, arguments);
-          };
-        }
-
-        // Patch getImageData inside iframe
-        const iframeCtx = iframe.contentWindow.CanvasRenderingContext2D;
-        if (iframeCtx && iframeCtx.prototype) {
-          const iOrigGetImageData = iframeCtx.prototype.getImageData;
-          iframeCtx.prototype.getImageData = function () {
-            const imageData = iOrigGetImageData.apply(this, arguments);
-            if (settings.antiFingerprint && imageData && imageData.data && imageData.data.length > 0) {
-              const d = imageData.data;
-              let mod = 0;
-              for (let i = 0; i < d.length && mod < 10; i += 4) {
-                if (d[i + 3] > 0) {
-                  d[i + (mod % 3)] = (d[i + (mod % 3)] + 1 + Math.floor(Math.random() * 2)) % 256;
-                  mod++;
-                }
-              }
-            }
-            return imageData;
-          };
-        }
-
-        // Patch WebGL inside iframe
-        const iframeWebGL = iframe.contentWindow.WebGLRenderingContext;
-        if (iframeWebGL && iframeWebGL.prototype) {
-          const iOrigGetParam = iframeWebGL.prototype.getParameter;
-          iframeWebGL.prototype.getParameter = function (param) {
-            if (settings.antiFingerprint && param in _glParamSpoof) return _glParamSpoof[param];
-            return iOrigGetParam.apply(this, arguments);
-          };
-        }
-      } catch {} // cross-origin iframe will throw
+      try { patchCanvasApis(iframe.contentWindow); } catch {}
 
       if (!iframe.contentWindow.fetch) return;
       // Patch fetch
@@ -1109,8 +989,8 @@
           patchIframeApis(node);
           node.addEventListener('load', () => patchIframeApis(node));
         }
-        if (node.querySelectorAll) {
-          for (const iframe of node.querySelectorAll('iframe')) {
+        if (node.firstElementChild) {
+          for (const iframe of node.getElementsByTagName('iframe')) {
             patchIframeApis(iframe);
             iframe.addEventListener('load', () => patchIframeApis(iframe));
           }
@@ -1134,34 +1014,17 @@
   }
   setTimeout(patchExistingIframes, 500);
   setTimeout(patchExistingIframes, 2000);
-  // Throttle: pause/resume every 3s to save CPU on SPA sites while still catching late iframes
-  let _iframeObserverActive = true;
-  setInterval(() => {
-    if (_iframeObserverActive) {
-      _iframePatchObserver.disconnect();
-      _iframeObserverActive = false;
-    } else {
-      _iframePatchObserver.observe(document.documentElement, { childList: true, subtree: true });
-      _iframeObserverActive = true;
-    }
-  }, 3000);
 
   // =============================================
   // 5e. ANTI-EXFIL: EventSource (SSE) & <a ping>
   // =============================================
-  if (window.EventSource) {
-    const OrigEventSource = window.EventSource;
-    window.EventSource = function (url, opts) {
-      try {
-        if (isCrossOrigin(url) && containsStoredToken(String(url))) {
-          const block = alertExfil('eventsource', url, 'url');
-          if (block) throw new Error('[Bastion] Blocked');
-        }
-      } catch (e) { if (e.message.startsWith('[Bastion]')) throw e; }
-      return new OrigEventSource(url, opts);
-    };
-    window.EventSource.prototype = OrigEventSource.prototype;
-  }
+  wrapConstructor('EventSource', (target, args, newTarget) => {
+    const url = String(args[0]);
+    if (isCrossOrigin(url) && containsStoredToken(url) && alertExfil('eventsource', url, 'url')) {
+      throw new Error('[Bastion] Blocked');
+    }
+    return Reflect.construct(target, args, newTarget);
+  });
 
   // Patch <a>.ping setter
   const pingDesc = Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'ping');
@@ -1204,15 +1067,12 @@
       try {
         const url = String(scriptURL);
         if (isCrossOrigin(url)) {
-          console.log('[Bastion] Blocked cross-origin ServiceWorker registration:', url);
           notify('TG_EXFIL_ALERT', {
             type: 'TG_EXFIL_ALERT', method: 'serviceWorker.register', url: url.substring(0, 200),
             where: 'url', timestamp: Date.now(), blocked: true
           });
           return Promise.reject(new Error('[Bastion] Blocked cross-origin ServiceWorker'));
         }
-        // Log same-origin SW registration for visibility
-        console.log('[Bastion] ServiceWorker registered:', url);
       } catch {}
       return origSWRegister.apply(this, arguments);
     };
@@ -1253,120 +1113,62 @@
     }
   }
 
+  // An iframe inserted and used in the same task (before the MutationObserver
+  // fires) would expose unpatched APIs, so patch it right after insertion.
+  function patchInsertedIframes(node) {
+    try {
+      if (node.nodeName === 'IFRAME') patchIframeApis(node);
+      else if (node.firstElementChild) for (const f of node.getElementsByTagName('iframe')) patchIframeApis(f);
+    } catch {}
+  }
+
   const origAppendChild = Node.prototype.appendChild;
   Node.prototype.appendChild = function (child) {
     checkNodeForTokenUrls(child);
-    return origAppendChild.call(this, child);
+    const result = origAppendChild.call(this, child);
+    if (child && child.isConnected) patchInsertedIframes(child);
+    return result;
   };
 
   const origInsertBefore = Node.prototype.insertBefore;
   Node.prototype.insertBefore = function (child, ref) {
     checkNodeForTokenUrls(child);
-    return origInsertBefore.call(this, child, ref);
+    const result = origInsertBefore.call(this, child, ref);
+    if (child && child.isConnected) patchInsertedIframes(child);
+    return result;
   };
 
   // =============================================
   // 5k. ANTI-EXFIL: Notification icon exfiltration
   // =============================================
-  if (window.Notification) {
-    const OrigNotification = window.Notification;
-    window.Notification = function (title, options) {
-      if (options && options.icon) {
-        try {
-          const url = String(options.icon);
-          if (isCrossOrigin(url) && containsStoredToken(url)) {
-            const block = alertExfil('notification.icon', url, 'url');
-            if (block) { options = { ...options, icon: undefined }; }
-          }
-        } catch {}
-      }
-      if (options && options.image) {
-        try {
-          const url = String(options.image);
-          if (isCrossOrigin(url) && containsStoredToken(url)) {
-            const block = alertExfil('notification.image', url, 'url');
-            if (block) { options = { ...options, image: undefined }; }
-          }
-        } catch {}
-      }
-      return new OrigNotification(title, options);
-    };
-    window.Notification.prototype = OrigNotification.prototype;
-    window.Notification.permission = OrigNotification.permission;
-    window.Notification.requestPermission = OrigNotification.requestPermission.bind(OrigNotification);
-  }
-
-  // =============================================
-  // 5l. ANTI-MINER: Blob Worker CPU monitoring
-  // =============================================
-  // Extend the existing Worker patch to also monitor Blob URL workers
-  const _OrigWorkerRef = OrigWorker; // already saved above
-  const _monitoredWorkers = new Set();
-
-  function monitorWorkerCPU(worker, urlStr) {
-    if (!settings.antiMiner) return;
-    _monitoredWorkers.add(worker);
-    // Check if the main thread gets sluggish (miner symptom)
-    let highCpuCount = 0;
-    const check = setInterval(() => {
-      if (!_monitoredWorkers.has(worker)) { clearInterval(check); return; }
-      const start = performance.now();
-      // requestIdleCallback gives us deadline — if no idle time, CPU is busy
-      requestIdleCallback((deadline) => {
-        const idle = deadline.timeRemaining();
-        if (idle < 2) { // Less than 2ms idle = CPU starved
-          highCpuCount++;
-          if (highCpuCount >= 5) { // 5 consecutive checks with no idle time
-            console.log('[Bastion] Suspected crypto miner Worker (high CPU)!', urlStr);
-            notify('TG_MINER_BLOCK', { url: urlStr, type: 'cpu_hog', timestamp: Date.now() });
-            try { worker.terminate(); } catch {}
-            _monitoredWorkers.delete(worker);
-            clearInterval(check);
-          }
-        } else {
-          highCpuCount = Math.max(0, highCpuCount - 1);
+  wrapConstructor('Notification', (target, args, newTarget) => {
+    let [title, options] = args;
+    for (const key of ['icon', 'image']) {
+      if (!options || !options[key]) continue;
+      try {
+        const url = String(options[key]);
+        if (isCrossOrigin(url) && containsStoredToken(url) && alertExfil('notification.' + key, url, 'url')) {
+          options = { ...options, [key]: undefined };
         }
-      });
-    }, 3000); // Check every 3 seconds
-    // Auto-stop monitoring after 120 seconds if no issues
-    setTimeout(() => { _monitoredWorkers.delete(worker); clearInterval(check); }, 120000);
-  }
-
-  // Re-patch Worker to add CPU monitoring for Blob workers
-  const _prevWorkerPatch = window.Worker;
-  window.Worker = function (url, opts) {
-    const worker = _prevWorkerPatch(url, opts);
-    const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : '';
-    // Monitor Blob URL workers (can't pattern-match their content)
-    if (urlStr.startsWith('blob:') && settings.antiMiner) {
-      monitorWorkerCPU(worker, urlStr);
+      } catch {}
     }
-    return worker;
-  };
-  window.Worker.prototype = _OrigWorkerRef.prototype;
+    return Reflect.construct(target, [title, options, ...args.slice(2)], newTarget);
+  });
 
   // =============================================
   // 6. ANTI-WEBRTC — Prevent IP leaks via STUN
   // =============================================
   if (window.RTCPeerConnection) {
-    const OrigRTC = window.RTCPeerConnection;
-
+    // Works on a copy: pages often pass frozen config objects (Redux, immer).
     function sanitizeRTCConfig(config) {
-      if (!config) config = { iceServers: [] };
-      else if (!config.iceServers) config.iceServers = [];
-      else {
-        config.iceServers = config.iceServers.filter(server => {
-          const urls = Array.isArray(server.urls) ? server.urls : [server.urls || server.url || ''];
-          const hasOnlyStun = urls.every(u => typeof u === 'string' && u.startsWith('stun:'));
-          if (hasOnlyStun) {
-            console.log('[Bastion] Blocked STUN server (IP leak protection):', urls);
-            notify('TG_WEBRTC_BLOCK', { type: 'TG_WEBRTC_BLOCK', urls, timestamp: Date.now() });
-            return false;
-          }
-          return true;
-        });
-      }
-      return config;
+      const servers = (config && config.iceServers) || [];
+      const kept = servers.filter((server) => {
+        const urls = Array.isArray(server.urls) ? server.urls : [server.urls || server.url || ''];
+        const hasOnlyStun = urls.every((u) => typeof u === 'string' && u.startsWith('stun:'));
+        if (hasOnlyStun) notify('TG_WEBRTC_BLOCK', { type: 'TG_WEBRTC_BLOCK', urls, timestamp: Date.now() });
+        return !hasOnlyStun;
+      });
+      return { ...(config || {}), iceServers: kept };
     }
 
     // Filter host/srflx ICE candidates from SDP to prevent real IP leak
@@ -1375,42 +1177,20 @@
       return sdp.replace(/a=candidate:.*typ (host|srflx).*\r?\n/g, '');
     }
 
-    window.RTCPeerConnection = function (config, constraints) {
-      if (settings.antiWebRTC) config = sanitizeRTCConfig(config);
-      const pc = new OrigRTC(config, constraints);
-      if (settings.antiWebRTC) {
-        // Patch setLocalDescription to filter real IP from SDP
-        const origSetLocal = pc.setLocalDescription.bind(pc);
-        pc.setLocalDescription = function (desc) {
-          if (settings.antiWebRTC && desc && desc.sdp) {
-            desc = { type: desc.type, sdp: filterSDP(desc.sdp) };
-          }
-          return origSetLocal(desc);
-        };
-      }
-      return pc;
-    };
-    window.RTCPeerConnection.prototype = OrigRTC.prototype;
-    Object.keys(OrigRTC).forEach(k => { window.RTCPeerConnection[k] = OrigRTC[k]; });
-  }
+    const OrigRTC = wrapConstructor('RTCPeerConnection', (target, args, newTarget) => {
+      if (settings.antiWebRTC) args = [sanitizeRTCConfig(args[0]), ...args.slice(1)];
+      return Reflect.construct(target, args, newTarget);
+    });
+    // Chrome still exposes the prefixed alias of the same constructor
+    if (window.webkitRTCPeerConnection === OrigRTC) window.webkitRTCPeerConnection = window.RTCPeerConnection;
 
-  // Also handle the webkit-prefixed version
-  if (window.webkitRTCPeerConnection) {
-    const OrigWebkitRTC = window.webkitRTCPeerConnection;
-    window.webkitRTCPeerConnection = function (config, constraints) {
-      if (settings.antiWebRTC) {
-        if (!config) config = { iceServers: [] };
-        else if (!config.iceServers) config.iceServers = [];
-        else {
-          config.iceServers = config.iceServers.filter(server => {
-            const urls = Array.isArray(server.urls) ? server.urls : [server.urls || server.url || ''];
-            return !urls.every(u => typeof u === 'string' && u.startsWith('stun:'));
-          });
-        }
+    const origSetLocal = RTCPeerConnection.prototype.setLocalDescription;
+    RTCPeerConnection.prototype.setLocalDescription = function (desc) {
+      if (settings.antiWebRTC && desc && desc.sdp) {
+        return origSetLocal.call(this, { type: desc.type, sdp: filterSDP(desc.sdp) }, ...Array.prototype.slice.call(arguments, 1));
       }
-      return new OrigWebkitRTC(config, constraints);
+      return origSetLocal.apply(this, arguments);
     };
-    window.webkitRTCPeerConnection.prototype = OrigWebkitRTC.prototype;
   }
 
   // =============================================
@@ -1452,23 +1232,14 @@
       if ((globalSuspicious || perElementSuspicious) && !_keyloggerReported) {
         _keyloggerReported = true;
         const reason = perElementSuspicious ? 'per-element' : 'global';
-        console.log('[Bastion] Suspicious keylogger pattern detected!', {
-          keyCount: _keyListenerCount, inputCount: _inputListenerCount,
-          perElementCount: _perElementKeyCount, reason, event: type
-        });
         notify('TG_KEYLOGGER_DETECT', {
           type: 'TG_KEYLOGGER_DETECT',
           keyCount: _keyListenerCount, inputCount: _inputListenerCount,
           perElementCount: _perElementKeyCount, reason, event: type, timestamp: Date.now()
         });
       }
-      // After detection: block new keydown/keyup listeners on individual inputs
-      if (_keyloggerReported && !isGlobal && RAW_KEY_EVENTS.includes(type)
-          && this instanceof HTMLElement
-          && (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA')) {
-        console.log('[Bastion] Blocked keylogger listener on', this.tagName);
-        return; // don't attach the listener
-      }
+      // Detection only: OTP fields and form libraries legitimately attach
+      // key listeners to every input, so listeners are never dropped.
     }
     return origAddEventListener.apply(this, arguments);
   };
@@ -1477,28 +1248,27 @@
   // 6b. ANTI-EXFIL: window.name data channel protection
   // =============================================
   // window.name persists across navigations — attacker sets it to token, navigates to evil.com
-  const windowNameDesc = Object.getOwnPropertyDescriptor(window, 'name') ||
-    { set: (v) => {}, get: () => '', configurable: true, enumerable: true };
-  try {
-    let _windowName = window.name || '';
-    Object.defineProperty(window, 'name', {
-      configurable: true,
-      enumerable: true,
-      get() { return _windowName; },
-      set(val) {
-        const str = String(val);
-        if (containsStoredToken(str)) {
-          console.log('[Bastion] Blocked token in window.name (cross-origin data channel)');
-          notify('TG_EXFIL_ALERT', {
-            type: 'TG_EXFIL_ALERT', method: 'window.name', url: location.href,
-            where: 'name', timestamp: Date.now(), blocked: settings.blockExfil
-          });
-          if (settings.blockExfil) return;
+  // Values without a stored token go to the native setter, so window.name
+  // still survives reloads for the sites that rely on it.
+  const windowNameDesc = Object.getOwnPropertyDescriptor(window, 'name');
+  if (windowNameDesc && windowNameDesc.get && windowNameDesc.set) {
+    try {
+      Object.defineProperty(window, 'name', {
+        ...windowNameDesc,
+        set(val) {
+          const str = String(val);
+          if (containsStoredToken(str)) {
+            notify('TG_EXFIL_ALERT', {
+              type: 'TG_EXFIL_ALERT', method: 'window.name', url: location.href,
+              where: 'name', timestamp: Date.now(), blocked: settings.blockExfil
+            });
+            if (settings.blockExfil) return;
+          }
+          windowNameDesc.set.call(this, str);
         }
-        _windowName = str;
-      }
-    });
-  } catch {}
+      });
+    } catch {}
+  }
 
   // =============================================
   // 7. CLIPBOARD GUARD — Protect against address swap
@@ -1514,7 +1284,7 @@
   ];
 
   function isCryptoAddress(text) {
-    if (!text || text.length < 20 || text.length > 70) return null;
+    if (typeof text !== 'string' || text.length < 20 || text.length > 70) return null;
     const trimmed = text.trim();
     for (const c of CRYPTO_PATTERNS) {
       if (c.pattern.test(trimmed)) return c.name;
@@ -1522,200 +1292,113 @@
     return null;
   }
 
-  // Track what user copies vs what gets written
-  let _lastUserCopy = null;
-  let _lastCopyTime = 0;
+  // A swap is a script replacing an address the *user* just copied (selection
+  // + Ctrl/Cmd+C or the context menu) with a different one, before the user
+  // has done anything else. Writes from the page's own "Copy" buttons are
+  // never treated as the user's copy, so consecutive legitimate writes pass.
+  const SWAP_WINDOW_MS = 2000;
+  let _userCopy = null;  // address from the last user copy
+  let _userCopyTime = 0;
+  let _lastInputTime = 0; // last click/keypress after which a write is user-driven
 
-  // Intercept clipboard write
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    const origWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
-    navigator.clipboard.writeText = function (text) {
-      if (settings.clipboardGuard) {
-        const cryptoType = isCryptoAddress(text);
-        // If something is writing a crypto address that differs from what user copied
-        if (cryptoType && _lastUserCopy && _lastUserCopy !== text && Date.now() - _lastCopyTime < 10000) {
-          const origCrypto = isCryptoAddress(_lastUserCopy);
-          if (origCrypto) {
-            // Crypto address swap detected!
-            console.warn('[Bastion] CLIPBOARD SWAP BLOCKED!', { original: _lastUserCopy, swapped: text });
-            notify('TG_CLIPBOARD_SWAP', {
-              type: 'TG_CLIPBOARD_SWAP',
-              original: _lastUserCopy.substring(0, 20) + '...',
-              swapped: text.substring(0, 20) + '...',
-              cryptoType,
-              timestamp: Date.now(),
-              blocked: true
-            });
-            // Write the ORIGINAL address, not the swapped one
-            return origWriteText(_lastUserCopy);
-          }
-        }
-        // Track this write as potential user copy
-        _lastUserCopy = text;
-        _lastCopyTime = Date.now();
-      }
-      return origWriteText(text);
+  _addEventListener.call(document, 'copy', () => {
+    try {
+      const sel = String(window.getSelection() || '').trim();
+      _userCopy = isCryptoAddress(sel) ? sel : null;
+      _userCopyTime = performance.now();
+    } catch {}
+  }, true);
+  for (const type of ['pointerdown', 'keydown']) {
+    _addEventListener.call(window, type, () => { _lastInputTime = performance.now(); }, { capture: true, passive: true });
+  }
+
+  // Returns the user's address if `text` would swap it, else null.
+  function swappedAddress(text) {
+    if (!settings.clipboardGuard || !_userCopy || text === _userCopy) return null;
+    const now = performance.now();
+    if (now - _userCopyTime > SWAP_WINDOW_MS || _lastInputTime > _userCopyTime) return null;
+    const cryptoType = isCryptoAddress(text);
+    if (!cryptoType) return null;
+    notify('TG_CLIPBOARD_SWAP', {
+      type: 'TG_CLIPBOARD_SWAP',
+      original: _userCopy.substring(0, 20) + '...',
+      swapped: text.substring(0, 20) + '...',
+      cryptoType, timestamp: Date.now(), blocked: true
+    });
+    return _userCopy;
+  }
+
+  if (window.Clipboard && Clipboard.prototype.writeText) {
+    const origWriteText = Clipboard.prototype.writeText;
+    Clipboard.prototype.writeText = function (text) {
+      const str = String(text);
+      return origWriteText.call(this, swappedAddress(str) || str);
     };
   }
 
-  // Track user copy events (selection + Ctrl+C / Cmd+C)
-  document.addEventListener('copy', () => {
-    if (!settings.clipboardGuard) return;
-    try {
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim()) {
-        _lastUserCopy = selection.toString().trim();
-        _lastCopyTime = Date.now();
-      }
-    } catch {}
-  }, true);
-
-  // Intercept old-style document.execCommand('copy')
-  const origExecCommand = document.execCommand.bind(document);
-  document.execCommand = function (cmd, ...args) {
-    if (settings.clipboardGuard && cmd === 'copy') {
-      try {
-        const selection = window.getSelection();
-        if (selection && selection.toString().trim()) {
-          _lastUserCopy = selection.toString().trim();
-          _lastCopyTime = Date.now();
-        }
-      } catch {}
-    }
-    return origExecCommand(cmd, ...args);
-  };
-
-  // Intercept binary clipboard.write() — attackers bypass writeText via ClipboardItem
-  if (navigator.clipboard && navigator.clipboard.write) {
-    const origWrite = navigator.clipboard.write.bind(navigator.clipboard);
-    navigator.clipboard.write = function (items) {
-      if (!settings.clipboardGuard || !items || !items.length) return origWrite(items);
-      // Read text/plain from ClipboardItem to check for address swap
+  // Binary clipboard.write() with a text/plain ClipboardItem — same check
+  if (window.Clipboard && Clipboard.prototype.write) {
+    const origWrite = Clipboard.prototype.write;
+    Clipboard.prototype.write = function (items) {
+      if (!settings.clipboardGuard || !_userCopy || !items || !items.length) return origWrite.apply(this, arguments);
+      const clipboard = this;
+      const args = arguments;
       return (async () => {
         try {
           for (const item of items) {
             if (item instanceof ClipboardItem && item.types.includes('text/plain')) {
-              const blob = await item.getType('text/plain');
-              const text = await blob.text();
-              const cryptoType = isCryptoAddress(text);
-              if (cryptoType && _lastUserCopy && _lastUserCopy !== text && Date.now() - _lastCopyTime < 10000) {
-                const origCrypto = isCryptoAddress(_lastUserCopy);
-                if (origCrypto) {
-                  console.warn('[Bastion] CLIPBOARD SWAP BLOCKED (binary write)!', { original: _lastUserCopy, swapped: text });
-                  notify('TG_CLIPBOARD_SWAP', {
-                    type: 'TG_CLIPBOARD_SWAP',
-                    original: _lastUserCopy.substring(0, 20) + '...',
-                    swapped: text.substring(0, 20) + '...',
-                    cryptoType, timestamp: Date.now(), blocked: true
-                  });
-                  // Replace with original address
-                  const origBlob = new Blob([_lastUserCopy], { type: 'text/plain' });
-                  const origItem = new ClipboardItem({ 'text/plain': origBlob });
-                  return origWrite([origItem]);
-                }
+              const text = await (await item.getType('text/plain')).text();
+              const original = swappedAddress(text);
+              if (original) {
+                const origItem = new ClipboardItem({ 'text/plain': new Blob([original], { type: 'text/plain' }) });
+                return origWrite.call(clipboard, [origItem]);
               }
             }
           }
         } catch {}
-        return origWrite(items);
+        return origWrite.apply(clipboard, args);
       })();
     };
   }
 
-  // Intercept binary clipboard.read() — same bypass vector
-  if (navigator.clipboard && navigator.clipboard.read) {
-    const origRead = navigator.clipboard.read.bind(navigator.clipboard);
-    navigator.clipboard.read = function () {
-      if (!settings.clipboardGuard) return origRead();
-      return origRead().then(async (items) => {
+  // The classic hijack: a 'copy' listener that overwrites the selection via
+  // event.clipboardData.setData().
+  if (window.DataTransfer) {
+    const origSetData = DataTransfer.prototype.setData;
+    DataTransfer.prototype.setData = function (format, data) {
+      if (settings.clipboardGuard && /^text(\/plain)?$/i.test(String(format))) {
         try {
-          for (let i = 0; i < items.length; i++) {
-            if (items[i].types.includes('text/plain')) {
-              const blob = await items[i].getType('text/plain');
-              const text = await blob.text();
-              const cryptoType = isCryptoAddress(text);
-              if (cryptoType && _lastUserCopy && text !== _lastUserCopy && Date.now() - _lastCopyTime < 30000) {
-                const origCrypto = isCryptoAddress(_lastUserCopy);
-                if (origCrypto) {
-                  console.warn('[Bastion] CLIPBOARD READ SWAP DETECTED (binary)!');
-                  notify('TG_CLIPBOARD_SWAP', {
-                    type: 'TG_CLIPBOARD_SWAP',
-                    original: _lastUserCopy.substring(0, 20) + '...',
-                    swapped: text.substring(0, 20) + '...',
-                    cryptoType, timestamp: Date.now(), blocked: true
-                  });
-                  const origBlob = new Blob([_lastUserCopy], { type: 'text/plain' });
-                  const origItem = new ClipboardItem({ 'text/plain': origBlob });
-                  return [origItem];
-                }
-              }
-            }
+          const sel = String(window.getSelection() || '').trim();
+          const str = String(data);
+          if (sel !== str && isCryptoAddress(sel) && isCryptoAddress(str)) {
+            _userCopy = sel;
+            _userCopyTime = performance.now();
+            const original = swappedAddress(str);
+            if (original) return origSetData.call(this, format, original);
           }
         } catch {}
-        return items;
-      });
-    };
-  }
-
-  // Intercept clipboard read to detect paste swap
-  if (navigator.clipboard && navigator.clipboard.readText) {
-    const origReadText = navigator.clipboard.readText.bind(navigator.clipboard);
-    navigator.clipboard.readText = function () {
-      if (!settings.clipboardGuard) return origReadText();
-      return origReadText().then(text => {
-        const cryptoType = isCryptoAddress(text);
-        if (cryptoType && _lastUserCopy && text !== _lastUserCopy && Date.now() - _lastCopyTime < 30000) {
-          const origCrypto = isCryptoAddress(_lastUserCopy);
-          if (origCrypto) {
-            console.warn('[Bastion] CLIPBOARD READ SWAP DETECTED!', { expected: _lastUserCopy, got: text });
-            notify('TG_CLIPBOARD_SWAP', {
-              type: 'TG_CLIPBOARD_SWAP',
-              original: _lastUserCopy.substring(0, 20) + '...',
-              swapped: text.substring(0, 20) + '...',
-              cryptoType,
-              timestamp: Date.now(),
-              blocked: true
-            });
-            return _lastUserCopy; // Return original
-          }
-        }
-        return text;
-      });
-    };
-  }
-
-  // =============================================
-  // 8. TAB-NAPPING PROTECTION — Secure window.open + block background navigation
-  // =============================================
-  const origWindowOpen = window.open;
-  window.open = function (url, target, features) {
-    if (settings.antiTabNapping) {
-      // Add noopener to prevent the new window from accessing window.opener
-      if (features) {
-        if (!features.includes('noopener')) features += ',noopener';
-      } else {
-        features = 'noopener';
       }
-      // Also nullify opener after open
-      const win = origWindowOpen.call(this, url, target, features);
-      // Extra safety: if somehow opener is still set
-      try { if (win) win.opener = null; } catch {}
-      return win;
-    }
-    return origWindowOpen.apply(this, arguments);
-  };
+      return origSetData.apply(this, arguments);
+    };
+  }
 
-  // Block page navigation when tab is not focused (tab-napping attack)
-  if (settings.antiTabNapping) {
+  // =============================================
+  // 8. TAB-NAPPING PROTECTION — detect background navigation
+  // =============================================
+  // window.open is left alone: forcing noopener makes it return null, which
+  // breaks OAuth, payment and 3-D Secure popups and print windows. Links with
+  // target=_blank already get noopener from the browser.
+
+  // Report page navigation while the tab is not focused (tab-napping attack)
+  {
     let _tabFocused = document.hasFocus();
-    window.addEventListener('blur', () => { _tabFocused = false; });
-    window.addEventListener('focus', () => { _tabFocused = true; });
+    _addEventListener.call(window, 'blur', () => { _tabFocused = false; });
+    _addEventListener.call(window, 'focus', () => { _tabFocused = true; });
 
     // location.assign/replace are read-only in modern browsers,
     // so we use beforeunload to warn about background navigation
-    window.addEventListener('beforeunload', (e) => {
+    _addEventListener.call(window, 'beforeunload', () => {
       if (!_tabFocused && settings.antiTabNapping) {
-        console.log('[Bastion] Tab-napping navigation detected while tab unfocused');
         notify('TG_TABNAP_BLOCK', {
           type: 'TG_TABNAP_BLOCK', blockedUrl: location.href, timestamp: Date.now()
         });
@@ -1724,76 +1407,51 @@
   }
 
   // =============================================
-  // 9. BLOCK javascript: URLs — Prevent XSS via links
+  // 9. BLOCK javascript: URLs — Prevent XSS via links (opt-in)
   // =============================================
-  if (settings.blockJavascriptUrls) {
-    // Patch HTMLAnchorElement.prototype.href setter
-    const anchorHrefDesc = Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'href');
-    if (anchorHrefDesc && anchorHrefDesc.set) {
-      const origAnchorHrefSet = anchorHrefDesc.set;
-      Object.defineProperty(HTMLAnchorElement.prototype, 'href', {
-        ...anchorHrefDesc,
-        set(val) {
-          if (settings.blockJavascriptUrls && typeof val === 'string'
-              && val.trim().toLowerCase().startsWith('javascript:')) {
-            console.log('[Bastion] Blocked javascript: URL on <a>');
-            notify('TG_JS_URL_BLOCK', {
-              type: 'TG_JS_URL_BLOCK', url: val.substring(0, 100), timestamp: Date.now()
-            });
-            origAnchorHrefSet.call(this, '#');
-            return;
-          }
-          origAnchorHrefSet.call(this, val);
+  const anchorHrefDesc = Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'href');
+  if (anchorHrefDesc && anchorHrefDesc.set) {
+    const origAnchorHrefSet = anchorHrefDesc.set;
+    Object.defineProperty(HTMLAnchorElement.prototype, 'href', {
+      ...anchorHrefDesc,
+      set(val) {
+        if (isBlockedJsUrl(val)) {
+          notify('TG_JS_URL_BLOCK', { type: 'TG_JS_URL_BLOCK', url: String(val).substring(0, 100), timestamp: Date.now() });
+          origAnchorHrefSet.call(this, '#');
+          return;
         }
-      });
-    }
-
-    // Click handler — last line of defense for existing javascript: links
-    document.addEventListener('click', (e) => {
-      if (!settings.blockJavascriptUrls) return;
-      const link = e.target.closest('a[href]');
-      if (link) {
-        const href = link.getAttribute('href') || '';
-        if (href.trim().toLowerCase().startsWith('javascript:')) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          console.log('[Bastion] Blocked click on javascript: link');
-          notify('TG_JS_URL_BLOCK', {
-            type: 'TG_JS_URL_BLOCK', url: href.substring(0, 100), timestamp: Date.now()
-          });
-        }
+        origAnchorHrefSet.call(this, val);
       }
-    }, true);
+    });
   }
 
-  // =============================================
-  // 10. BLOCK data:/blob: IFRAMES — Prevent phishing iframes
-  // =============================================
-  if (settings.blockDataIframes) {
-    const iframeSrcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
-    if (iframeSrcDesc && iframeSrcDesc.set) {
-      const origIframeSrcSet = iframeSrcDesc.set;
-      Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
-        ...iframeSrcDesc,
-        set(val) {
-          if (settings.blockDataIframes) {
-            const v = String(val).trim().toLowerCase();
-            if (v.startsWith('data:') || v.startsWith('blob:')) {
-              // Allow safe types: images, pdf
-              if (v.startsWith('data:image/') || v.startsWith('data:application/pdf')) {
-                // safe — pass through
-              } else {
-                console.log('[Bastion] Blocked data:/blob: iframe:', val.substring(0, 80));
-                notify('TG_DATA_IFRAME_BLOCK', {
-                  type: 'TG_DATA_IFRAME_BLOCK', src: val.substring(0, 100), timestamp: Date.now()
-                });
-                return; // don't set src
-              }
-            }
-          }
-          origIframeSrcSet.call(this, val);
-        }
-      });
+  // Click on an existing javascript: link: cancel only the navigation. The
+  // site's own click handlers still run (no stopPropagation).
+  _addEventListener.call(document, 'click', (e) => {
+    if (!settings.blockJavascriptUrls || !(e.target instanceof Element)) return;
+    const link = e.target.closest('a[href]');
+    const href = link && link.getAttribute('href');
+    if (href && isBlockedJsUrl(href)) {
+      e.preventDefault();
+      notify('TG_JS_URL_BLOCK', { type: 'TG_JS_URL_BLOCK', url: href.substring(0, 100), timestamp: Date.now() });
     }
+  }, true);
+
+  // =============================================
+  // 10. BLOCK data: IFRAMES — Prevent phishing iframes
+  // =============================================
+  const iframeSrcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+  if (iframeSrcDesc && iframeSrcDesc.set) {
+    const origIframeSrcSet = iframeSrcDesc.set;
+    Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+      ...iframeSrcDesc,
+      set(val) {
+        if (isBlockedIframeSrc(val)) {
+          reportBlockedIframe(val);
+          return; // don't set src
+        }
+        origIframeSrcSet.call(this, val);
+      }
+    });
   }
 })();
