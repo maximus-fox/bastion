@@ -1,0 +1,75 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  color: #e0e0e0;
+  background: #1a1a2e;
+}
+.card {
+  width: 100%;
+  max-width: 560px;
+  background: #16213e;
+  border: 1px solid #ef444455;
+  border-top: 4px solid #ef4444;
+  border-radius: 12px;
+  padding: 28px 28px 24px;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f87171;
+  margin-bottom: 14px;
+}
+h1 { font-size: 22px; line-height: 1.3; color: #fff; margin-bottom: 12px; }
+.lead { margin-bottom: 10px; }
+.lead strong { color: #fbbf24; overflow-wrap: anywhere; }
+.explain { color: #cbd5e1; margin-bottom: 18px; }
+.url-box {
+  background: #1a1a2e;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 22px;
+}
+.url-label { font-size: 11px; color: #94a3b8; margin-bottom: 2px; }
+.url { font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; color: #e2e8f0; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn {
+  font: inherit;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.btn-primary {
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  padding: 11px 22px;
+}
+.btn-primary:hover { background: #2563eb; }
+.btn-link {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  text-decoration: underline;
+  padding: 11px 4px;
+  font-weight: 500;
+}
+.btn-link:hover { color: #e0e0e0; }
+.btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+.note { font-size: 12px; color: #94a3b8; margin-top: 10px; }
+.error { font-size: 13px; color: #f87171; margin-top: 12px; }
+@media (max-width: 480px) {
+  .card { padding: 22px 18px 20px; }
+  h1 { font-size: 19px; }
+  .actions { flex-direction: column; align-items: stretch; }
+}

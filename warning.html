@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bastion</title>
+  <link rel="stylesheet" href="warning.css">
+</head>
+<body>
+  <main class="card" aria-labelledby="warnTitle">
+    <div class="badge">
+      <svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
+      <span id="detectedBy"></span>
+    </div>
+    <h1 id="warnTitle"></h1>
+    <p class="lead" id="lead"></p>
+    <p class="explain" id="explain"></p>
+    <div class="url-box">
+      <div class="url-label" id="urlLabel"></div>
+      <div class="url" id="url"></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="btnBack" type="button"></button>
+      <button class="btn btn-link" id="btnContinue" type="button"></button>
+    </div>
+    <p class="note" id="continueNote"></p>
+    <p class="error" id="error" role="alert" hidden></p>
+  </main>
+  <script src="i18n.js"></script>
+  <script src="warning.js"></script>
+</body>
+</html>

@@ -113,7 +113,7 @@ function svgIcon(name, size) {
     + 'aria-hidden="true">'+inner+'</svg>';
 }
 /**
- * TokenGuard v2.0 — Popup Logic with i18n (RU/EN)
+ * Bastion — Popup Logic with i18n (RU/EN)
  */
 
 const siteUrl = document.getElementById('siteUrl');
@@ -127,16 +127,39 @@ const toastEl = document.getElementById('toast');
 const langBtn = document.getElementById('langBtn');
 
 let currentTabId = null;
+let currentTabUrl = '';
 
-// --- Tabs ---
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+// --- Tabs (WAI-ARIA tabs pattern: arrows/Home/End move between tabs) ---
+const tabEls = [...document.querySelectorAll('.tab')];
+
+function activateTab(tab, focus) {
+  for (const el of tabEls) {
+    const on = el === tab;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-selected', on ? 'true' : 'false');
+    el.tabIndex = on ? 0 : -1;
+    document.getElementById('tab-' + el.dataset.tab).classList.toggle('active', on);
+  }
+  if (focus) tab.focus();
+}
+
+tabEls.forEach((tab, i) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', (e) => {
+    let next = null;
+    if (e.key === 'ArrowRight') next = tabEls[(i + 1) % tabEls.length];
+    else if (e.key === 'ArrowLeft') next = tabEls[(i - 1 + tabEls.length) % tabEls.length];
+    else if (e.key === 'Home') next = tabEls[0];
+    else if (e.key === 'End') next = tabEls[tabEls.length - 1];
+    else if (e.key === 'Enter' || e.key === ' ') next = tab;
+    if (next) {
+      e.preventDefault();
+      activateTab(next, true);
+    }
   });
 });
+
+document.getElementById('footerVersion').textContent = 'v' + chrome.runtime.getManifest().version;
 
 // --- Language switcher ---
 langBtn.addEventListener('click', () => {
@@ -147,8 +170,41 @@ langBtn.addEventListener('click', () => {
 
 // --- Utils ---
 function escapeHtml(str) {
-  if (!str) return '';
+  if (str === null || str === undefined) return '';
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Values that came from a web page (alerts, events, logs) may be any type.
+function str(v) {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+function formatTime(ms, locale) {
+  const d = new Date(Number(ms));
+  return isNaN(d) ? '' : d.toLocaleString(locale);
+}
+
+// Pages where the browser never runs content scripts, so reloading won't help.
+function isRestrictedUrl(url) {
+  if (!/^(https?|file):/i.test(url || '')) return true;
+  try {
+    const u = new URL(url);
+    return u.hostname === 'chromewebstore.google.com'
+      || (u.hostname === 'chrome.google.com' && u.pathname.startsWith('/webstore'))
+      || /\.pdf$/i.test(u.pathname);
+  } catch { return true; }
+}
+
+function noAccessHtml() {
+  const restricted = isRestrictedUrl(currentTabUrl);
+  return `
+    <div class="status neutral">
+      <span class="status-icon">${svgIcon('lock')}</span>
+      <div>
+        <div class="status-text">${t('noAccess')}</div>
+        <div class="status-sub">${t(restricted ? 'noAccessRestricted' : 'noAccessSub')}</div>
+      </div>
+    </div>`;
 }
 
 function formatDate(timestamp) {
@@ -179,6 +235,7 @@ function msgTab(tabId, msg, cb) {
 
 // --- Update all UI with current language ---
 function updateUI() {
+  applyLang(currentLang);
   langBtn.textContent = currentLang.toUpperCase();
   document.getElementById('headerSub').textContent = t('subtitle');
   ['Scanner','Headers','History','Quantum','Protect','Audit'].forEach(n => {
@@ -259,6 +316,11 @@ function renderScanner(data) {
             <button class="btn-delete" data-key="${escapeHtml(f.key)}" data-storage="${escapeHtml(f.storage)}">${svgIcon('trash')} ${t('btnDelete')}</button>
           </div>
         </div>
+        <div class="delete-confirm" hidden>
+          <span>${t('deleteConfirm')}</span>
+          <button class="action-btn action-btn-yes btn-delete-yes">${t('deleteConfirmYes')}</button>
+          <button class="action-btn action-btn-no btn-delete-no">${t('deleteConfirmNo')}</button>
+        </div>
         <div class="finding-token">${escapeHtml(f.token)}</div>`;
 
     if (f.type === 'jwt' && p) {
@@ -279,9 +341,15 @@ function renderScanner(data) {
   html += '</div>';
   scannerContent.innerHTML = html;
 
-  // Delete buttons
+  // Delete buttons: confirm first, deleting a login token signs the user out
   scannerContent.querySelectorAll('.btn-delete').forEach(btn => {
-    btn.addEventListener('click', () => {
+    const confirmBox = btn.closest('.finding').querySelector('.delete-confirm');
+    btn.addEventListener('click', () => { confirmBox.hidden = false; btn.hidden = true; });
+    confirmBox.querySelector('.btn-delete-no').addEventListener('click', () => {
+      confirmBox.hidden = true;
+      btn.hidden = false;
+    });
+    confirmBox.querySelector('.btn-delete-yes').addEventListener('click', () => {
       const key = btn.dataset.key;
       const storage = btn.dataset.storage;
       msgTab(currentTabId, { action: 'removeItem', key, storage }, (resp) => {
@@ -289,7 +357,9 @@ function renderScanner(data) {
           showToast(t('deleted') + ': ' + key);
           setTimeout(() => loadScanner(), 300);
         } else {
-          showToast(t('deleteError'));
+          showToast(t('deleteError') + (resp && resp.error ? ': ' + str(resp.error) : ''));
+          confirmBox.hidden = true;
+          btn.hidden = false;
         }
       });
     });
@@ -339,12 +409,14 @@ function renderScanner(data) {
 
   // Exfil alerts
   msgBg({ action: 'getExfilAlerts', tabId: currentTabId }, (alerts) => {
-    if (!alerts || alerts.length === 0) return;
+    if (!Array.isArray(alerts)) return;
+    alerts = alerts.filter(a => a && typeof a === 'object');
+    if (alerts.length === 0) return;
     let exHtml = `<div class="exfil-section">
       <div class="exfil-title">${svgIcon('warn')} ${t('exfilTitle')}: ${alerts.length}</div>`;
     for (const a of alerts.slice(-5)) {
       const blockedTag = a.blocked ? ` <span class="protect-blocked-badge">${t('exfilBlocked')}</span>` : '';
-      exHtml += `<div class="exfil-item">${escapeHtml(a.method.toUpperCase())} \u2192 ${escapeHtml(a.url)}${blockedTag}</div>`;
+      exHtml += `<div class="exfil-item">${escapeHtml(str(a.method).toUpperCase())} \u2192 ${escapeHtml(str(a.url))}${blockedTag}</div>`;
     }
     exHtml += '</div>';
     scannerContent.insertAdjacentHTML('beforeend', exHtml);
@@ -363,7 +435,7 @@ function buildActionPrompts(findings) {
       <div class="action-prompt warning" id="promptExpired">
         <div class="action-prompt-icon">${svgIcon('clock')}</div>
         <div class="action-prompt-text">${t('actionDeleteExpired')}</div>
-        <div class="action-prompt-desc">${t('actionDeleteExpiredDesc')} (${expiredJwts.length})</div>
+        <div class="action-prompt-desc">${t('actionDeleteExpiredDesc')} (${expiredJwts.length}). ${t('deleteLogoutWarn')}</div>
         <div class="action-btns">
           <button class="action-btn action-btn-yes" id="btnDeleteExpired">${t('actionYes')}</button>
           <button class="action-btn action-btn-no" id="btnSkipExpired">${t('actionNo')}</button>
@@ -396,8 +468,8 @@ function buildActionPrompts(findings) {
       let count = 0;
       let done = 0;
       for (const f of expiredJwts) {
-        msgTab(currentTabId, { action: 'removeItem', key: f.key, storage: f.storage }, () => {
-          count++;
+        msgTab(currentTabId, { action: 'removeItem', key: f.key, storage: f.storage }, (resp) => {
+          if (resp && resp.success) count++;
           done++;
           if (done === expiredJwts.length) {
             showToast(`${t('actionDeletedN')}: ${count}`);
@@ -416,11 +488,13 @@ function buildActionPrompts(findings) {
   if (btnDelCards) {
     btnDelCards.addEventListener('click', () => {
       let done = 0;
+      let count = 0;
       for (const f of cards) {
-        msgTab(currentTabId, { action: 'removeItem', key: f.key, storage: f.storage }, () => {
+        msgTab(currentTabId, { action: 'removeItem', key: f.key, storage: f.storage }, (resp) => {
+          if (resp && resp.success) count++;
           done++;
           if (done === cards.length) {
-            showToast(t('actionDone'));
+            showToast(count === cards.length ? t('actionDone') : `${t('deleteError')}: ${cards.length - count}`);
             setTimeout(() => loadScanner(), 300);
           }
         });
@@ -448,9 +522,11 @@ function buildActionPrompts(findings) {
         </div>`;
       scannerContent.insertAdjacentHTML('beforeend', promptHtml);
       document.getElementById('btnEnableBlock').addEventListener('click', () => {
-        msgBg({ action: 'setSettings', settings: { ...settings, blockExfil: true } }, () => {
+        msgBg({ action: 'setSettings', settings: { blockExfil: true } }, () => {
           showToast(t('settBlockExfilOn'));
           document.getElementById('promptBlock').remove();
+          const toggle = protectContent.querySelector('.shield-toggle[data-key="blockExfil"]');
+          if (toggle) toggle.checked = true;
         });
       });
       document.getElementById('btnSkipBlock').addEventListener('click', () => {
@@ -463,14 +539,7 @@ function buildActionPrompts(findings) {
 function loadScanner() {
   msgTab(currentTabId, { action: 'scan' }, (response) => {
     if (!response) {
-      scannerContent.innerHTML = `
-        <div class="status safe">
-          <span class="status-icon">${svgIcon('lock')}</span>
-          <div>
-            <div class="status-text">${t('noAccess')}</div>
-            <div class="status-sub">${t('noAccessSub')}</div>
-          </div>
-        </div>`;
+      scannerContent.innerHTML = noAccessHtml();
       return;
     }
     renderScanner(response);
@@ -576,101 +645,43 @@ function loadHistory() {
   });
 }
 
-// --- Quantum Tab ---
+// --- Encryption (TLS) Tab ---
+// Chrome doesn't expose a connection's key exchange or cipher to extensions,
+// so this tab shows only what is actually known: the scheme and the HTTP
+// protocol version reported by the page (nextHopProtocol).
 function loadQuantum() {
-  msgBg({ action: 'getQuantumStatus', tabId: currentTabId }, (qInfo) => {
-    chrome.tabs.get(currentTabId, (tab) => {
-      if (chrome.runtime.lastError || !tab) {
-        renderQuantum(qInfo, tab);
-        return;
-      }
-
-      // Auto-detect TLS info if not yet determined
-      if (!qInfo || qInfo.pqStatus === 'unknown') {
-        msgTab(currentTabId, { action: 'detectTLS' }, (result) => {
-          if (chrome.runtime.lastError) result = null;
-          const secInfo = result && result.protocol
-            ? { keyExchange: result.keyExchange || 'ECDHE', cipher: result.cipher || 'AES-256-GCM', protocol: result.protocol }
-            : (tab.url && tab.url.startsWith('https://') ? { keyExchange: 'ECDHE', cipher: 'AES-256-GCM', protocol: 'TLS 1.3' } : null);
-          if (secInfo) {
-            msgBg({ action: 'reportSecurityInfo', tabId: currentTabId, securityInfo: secInfo }, () => {
-              msgBg({ action: 'getQuantumStatus', tabId: currentTabId }, (updated) => {
-                renderQuantum(updated, tab);
-              });
-            });
-          } else {
-            renderQuantum(qInfo, tab);
-          }
-        });
-      } else {
-        renderQuantum(qInfo, tab);
-      }
+  chrome.tabs.get(currentTabId, (tab) => {
+    if (chrome.runtime.lastError) tab = null;
+    const url = (tab && tab.url) || currentTabUrl || '';
+    if (!/^https?:/i.test(url)) {
+      renderQuantum(url, null);
+      return;
+    }
+    msgTab(currentTabId, { action: 'detectTLS' }, (result) => {
+      renderQuantum(url, result && result.protocol ? str(result.protocol) : null);
     });
   });
 }
 
-function renderQuantum(qInfo, tab, secInfo) {
-  const url = (tab && tab.url) || '';
-  const isHttps = url.startsWith('https://');
-  const isHttp = url.startsWith('http://');
-  const isChromeInternal = url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:');
+function protocolLabel(protocol) {
+  const known = { 'h3': 'HTTP/3 (QUIC, TLS 1.3)', 'h2': 'HTTP/2', 'http/1.1': 'HTTP/1.1', 'http/1.0': 'HTTP/1.0' };
+  if (!protocol) return t('qProtocolUnknown');
+  return known[protocol.toLowerCase()] || protocol;
+}
 
-  // Determine PQ status
-  let pqStatus = 'unknown';
-  let keyExchange = null;
-  let cipher = null;
-  let protocol = null;
+function renderQuantum(url, protocol) {
+  const isHttps = /^https:/i.test(url);
+  const isHttp = /^http:/i.test(url);
+  const state = isHttps ? 'https' : isHttp ? 'no_tls' : url ? 'internal' : 'unknown';
 
-  if (qInfo) {
-    pqStatus = qInfo.pqStatus || 'unknown';
-    keyExchange = qInfo.keyExchange;
-    cipher = qInfo.cipher;
-    protocol = qInfo.protocol;
-  }
-
-  if (!isHttps && isHttp) pqStatus = 'no_tls';
-  if (isChromeInternal) pqStatus = 'internal';
-
-  // Build UI
   const STATUS_MAP = {
-    'pq_safe': {
-      icon: svgIcon('shield'),
-      class: 'quantum-safe',
-      title: t('qStatusPQSafe'),
-      desc: t('qDescPQSafe'),
-      grade: 'Q+'
-    },
-    'classic': {
-      icon: svgIcon('warn'),
-      class: 'quantum-classic',
-      title: t('qStatusClassic'),
-      desc: t('qDescClassic'),
-      grade: 'C'
-    },
-    'no_tls': {
-      icon: svgIcon('x'),
-      class: 'quantum-danger',
-      title: t('qStatusNoTLS'),
-      desc: t('qDescNoTLS'),
-      grade: '!'
-    },
-    'unknown': {
-      icon: svgIcon('help'),
-      class: 'quantum-unknown',
-      title: t('qStatusUnknown'),
-      desc: t('qDescUnknown'),
-      grade: '?'
-    },
-    'internal': {
-      icon: svgIcon('help'),
-      class: 'quantum-unknown',
-      title: t('qStatusInternal'),
-      desc: t('qDescInternal'),
-      grade: '-'
-    }
+    https: { icon: svgIcon('lock'), class: 'quantum-neutral', title: t('qStatusHttps'), desc: t('qDescHttps'), grade: 'TLS' },
+    no_tls: { icon: svgIcon('x'), class: 'quantum-danger', title: t('qStatusNoTLS'), desc: t('qDescNoTLS'), grade: '!' },
+    internal: { icon: svgIcon('help'), class: 'quantum-unknown', title: t('qStatusInternal'), desc: t('qDescInternal'), grade: '-' },
+    unknown: { icon: svgIcon('help'), class: 'quantum-unknown', title: t('qStatusUnknown'), desc: t('qDescUnknown'), grade: '?' },
   };
-
-  const status = STATUS_MAP[pqStatus] || STATUS_MAP['unknown'];
+  const status = STATUS_MAP[state];
+  const encryption = isHttps ? 'TLS' : isHttp ? t('qStatusNoTLS') : '-';
 
   let html = `
     <div class="quantum-header ${status.class}">
@@ -678,27 +689,28 @@ function renderQuantum(qInfo, tab, secInfo) {
       <div class="quantum-grade">${status.grade}</div>
       <div class="quantum-title">${status.title}</div>
       <div class="quantum-desc">${status.desc}</div>
-    </div>
+    </div>`;
 
+  if (isHttps || isHttp) {
+    html += `
     <div class="quantum-details">
       <div class="quantum-detail-title">${t('qDetailsTitle')}</div>
-
+      <div class="quantum-row">
+        <span class="quantum-label">${t('qEncryption')}</span>
+        <span class="quantum-value">${escapeHtml(encryption)}</span>
+      </div>
       <div class="quantum-row">
         <span class="quantum-label">${t('qProtocol')}</span>
-        <span class="quantum-value">${isHttps ? 'HTTPS (TLS 1.3)' : isHttp ? 'HTTP' : isChromeInternal ? 'N/A' : protocol || '?'}</span>
+        <span class="quantum-value">${escapeHtml(protocolLabel(protocol))}</span>
       </div>
-
       <div class="quantum-row">
         <span class="quantum-label">${t('qKeyExchange')}</span>
-        <span class="quantum-value ${keyExchange && /kyber|mlkem/i.test(keyExchange) ? 'qval-safe' : 'qval-classic'}">${keyExchange || (isHttps ? t('qDetecting') : '-')}</span>
+        <span class="quantum-value">${isHttps ? t('qKeyExchangeHidden') : '-'}</span>
       </div>
+    </div>`;
+  }
 
-      <div class="quantum-row">
-        <span class="quantum-label">${t('qCipher')}</span>
-        <span class="quantum-value">${cipher || (isHttps ? t('qDetecting') : '-')}</span>
-      </div>
-    </div>
-
+  html += `
     <div class="quantum-info">
       <div class="quantum-info-title">${t('qInfoTitle')}</div>
       <div class="quantum-info-item">
@@ -709,10 +721,10 @@ function renderQuantum(qInfo, tab, secInfo) {
         </div>
       </div>
       <div class="quantum-info-item">
-        <span class="qi-icon">${svgIcon('warn')}</span>
+        <span class="qi-icon">${svgIcon('search')}</span>
         <div>
-          <div class="qi-label">${t('qInfoClassicLabel')}</div>
-          <div class="qi-desc">${t('qInfoClassicDesc')}</div>
+          <div class="qi-label">${t('qInfoCheckLabel')}</div>
+          <div class="qi-desc">${t('qInfoCheckDesc')}</div>
         </div>
       </div>
       <div class="quantum-info-item">
@@ -775,7 +787,7 @@ function loadProtect() {
           <div class="master-desc">${t('masterSwitchDesc')}</div>
         </div>
         <label class="toggle toggle-master">
-          <input type="checkbox" id="masterToggle" ${masterChecked ? 'checked' : ''}>
+          <input type="checkbox" id="masterToggle" aria-label="${escapeHtml(t('masterSwitch'))}" ${masterChecked ? 'checked' : ''}>
           <span class="toggle-slider"></span>
         </label>
       </div>
@@ -790,7 +802,7 @@ function loadProtect() {
             <div class="setting-desc">${t(tog.descKey)}</div>
           </div>
           <label class="toggle">
-            <input type="checkbox" class="shield-toggle" data-key="${tog.key}" ${settings[tog.key] ? 'checked' : ''}>
+            <input type="checkbox" class="shield-toggle" data-key="${tog.key}" aria-label="${escapeHtml(t(tog.labelKey))}" ${settings[tog.key] ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>`;
@@ -810,7 +822,7 @@ function loadProtect() {
             <div class="setting-desc">${t(feat.descKey)}</div>
           </div>
           <label class="toggle">
-            <input type="checkbox" class="shield-toggle" data-key="${feat.key}" ${settings[feat.key] ? 'checked' : ''}>
+            <input type="checkbox" class="shield-toggle" data-key="${feat.key}" aria-label="${escapeHtml(t(feat.labelKey))}" ${settings[feat.key] ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>`;
@@ -908,7 +920,9 @@ function loadShieldStats() {
 
   // Shield events (phishing, form blocks, miner blocks, fingerprint)
   msgBg({ action: 'getShieldEvents', tabId: currentTabId }, (events) => {
-    if (!events || events.length === 0) return;
+    if (!Array.isArray(events)) return;
+    events = events.filter(e => e && typeof e === 'object');
+    if (events.length === 0) return;
 
     const fpCount = events.filter(e => e.action === 'fingerprintDetected').length;
     let evHtml = '';
@@ -937,12 +951,14 @@ function loadShieldStats() {
       'jsThreatFound': { icon: svgIcon('search'), labelKey: 'eventJsThreat' },
       'darkPatternFound': { icon: svgIcon('alarm'), labelKey: 'eventDarkPattern' },
       'breachFound': { icon: svgIcon('unlock'), labelKey: 'eventBreach' },
+      'jsUrlBlocked': { icon: svgIcon('stop'), labelKey: 'eventJsUrlBlock' },
+      'dataIframeBlocked': { icon: svgIcon('clickjack'), labelKey: 'eventDataIframeBlock' },
     };
 
     evHtml += `<div class="protect-log"><div class="protect-log-title">${svgIcon('log')} ${t('eventsLog')}</div>`;
     for (const ev of events.slice(-10).reverse()) {
-      const info = EVENT_LABELS[ev.action] || { icon: svgIcon('help'), labelKey: ev.action };
-      const time = new Date(ev.timestamp).toLocaleString(locale);
+      const info = EVENT_LABELS[ev.action] || { icon: svgIcon('help'), labelKey: 'eventOther' };
+      const time = formatTime(ev.timestamp, locale);
       evHtml += `<div class="protect-log-item">
         <span>${info.icon} ${t(info.labelKey)}</span>
         <span style="color:#475569">${time}</span>
@@ -958,13 +974,14 @@ function loadProtectLogs() {
 
   msgBg({ action: 'getAutoDeleteLog' }, (log) => {
     let logHtml = `<div class="protect-log"><div class="protect-log-title">${svgIcon('form')} ${t('logTitle')}</div>`;
-    if (!log || log.length === 0) {
+    if (Array.isArray(log)) log = log.filter(e => e && typeof e === 'object');
+    if (!Array.isArray(log) || log.length === 0) {
       logHtml += `<div class="protect-log-empty">${t('logEmpty')}</div>`;
     } else {
       for (const entry of log.slice(-10).reverse()) {
-        const time = new Date(entry.timestamp).toLocaleString(locale);
+        const time = formatTime(entry.timestamp, locale);
         logHtml += `<div class="protect-log-item">
-          <span>${escapeHtml(entry.key)} (${escapeHtml(entry.domain)})</span>
+          <span>${escapeHtml(str(entry.key))} (${escapeHtml(str(entry.domain))})</span>
           <span style="color:#475569">${time}</span>
         </div>`;
       }
@@ -972,12 +989,12 @@ function loadProtectLogs() {
     logHtml += '</div>';
 
     msgBg({ action: 'getExfilAlerts', tabId: currentTabId }, (alerts) => {
-      const blocked = (alerts || []).filter(a => a.blocked);
+      const blocked = (Array.isArray(alerts) ? alerts : []).filter(a => a && a.blocked);
       if (blocked.length > 0) {
         logHtml += `<div class="protect-log"><div class="protect-log-title">${svgIcon('stop')} ${t('logBlockedTitle')}</div>`;
         for (const a of blocked.slice(-10).reverse()) {
           logHtml += `<div class="protect-log-item">
-            <span>${escapeHtml(a.method.toUpperCase())} \u2192 ${escapeHtml(a.url)}</span>
+            <span>${escapeHtml(str(a.method).toUpperCase())} \u2192 ${escapeHtml(str(a.url))}</span>
             <span class="protect-blocked-badge">${t('exfilBlocked')}</span>
           </div>`;
         }
@@ -1005,14 +1022,7 @@ function loadAudit() {
 
   msgTab(currentTabId, { action: 'auditPage' }, (result) => {
     if (!result) {
-      auditContent.innerHTML = `
-        <div class="status safe">
-          <span class="status-icon">${svgIcon('lock')}</span>
-          <div>
-            <div class="status-text">${t('noAccess')}</div>
-            <div class="status-sub">${t('noAccessSub')}</div>
-          </div>
-        </div>`;
+      auditContent.innerHTML = noAccessHtml();
       return;
     }
 
@@ -1054,7 +1064,7 @@ function renderAudit() {
     // CORS misconfiguration
     if (ah['access-control-allow-origin'] === '*') {
       headerFindings.push({
-        type: 'cors', subtype: 'wildcard_origin', severity: 'warning',
+        type: 'cors', subtype: 'cors_wildcard', severity: 'warning',
         detail: 'CORS: Access-Control-Allow-Origin: * — any site can read responses'
       });
     }
@@ -1449,11 +1459,12 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   }
 
   currentTabId = tabs[0].id;
+  currentTabUrl = tabs[0].url || '';
   siteUrl.textContent = tabs[0].url || '...';
 
-  // Load language preference then render
-  chrome.storage.local.get({ lang: 'ru' }, (data) => {
-    currentLang = data.lang || 'ru';
+  // Saved language, else the browser's
+  chrome.storage.local.get('lang', (data) => {
+    applyLang(data.lang || defaultLang());
     updateUI();
   });
 });

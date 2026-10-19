@@ -26,10 +26,13 @@ const LANGS = {
     active: 'Активен',
     noAccess: 'Нет доступа',
     noAccessSub: 'Перезагрузите страницу и попробуйте снова',
-    scanning: 'Сканирование...',
-    loading: 'Загрузка...',
+    noAccessRestricted: 'Браузер не разрешает расширениям работать на этой странице (служебные страницы, Chrome Web Store, просмотр PDF).',
     deleted: 'Удалено',
     deleteError: 'Ошибка удаления',
+    deleteConfirm: 'Удалить? Если это токен входа, сайт может разлогинить вас.',
+    deleteConfirmYes: 'Удалить',
+    deleteConfirmNo: 'Отмена',
+    deleteLogoutWarn: 'Сайт может разлогинить вас.',
 
     // Tips
     tipsTitle: 'Рекомендации',
@@ -88,7 +91,6 @@ const LANGS = {
     logTitle: 'Журнал авто-удалений',
     logEmpty: 'Пока ничего не удалялось',
     logBlockedTitle: 'Заблокированные запросы',
-    langLabel: 'Язык / Language',
 
     // Action prompts
     actionDeleteExpired: 'Удалить все истёкшие токены?',
@@ -156,7 +158,9 @@ const LANGS = {
     eventKeylogger: 'Кейлоггер обнаружен',
     eventTabNapping: 'Tab-napping заблокирован',
     eventClipboardSwap: 'Подмена буфера заблокирована',
-    noEvents: 'Угроз не обнаружено',
+    eventJsUrlBlock: 'javascript:-ссылка заблокирована',
+    eventDataIframeBlock: 'data:-фрейм заблокирован',
+    eventOther: 'Событие защиты',
 
     // Audit tab
     tabAudit: 'Аудит',
@@ -208,31 +212,40 @@ const LANGS = {
     auditCheckInfoDesc: 'Ищем версии серверов в заголовках (Server, X-Powered-By), чувствительные данные в HTML-комментариях (пароли, TODO, пути к файлам).',
 
     // Quantum tab
-    tabQuantum: 'Квантум',
-    qStatusPQSafe: 'Квантово-устойчивое соединение',
-    qDescPQSafe: 'Этот сайт использует пост-квантовый обмен ключами (ML-KEM/Kyber). Данные защищены от будущих квантовых компьютеров.',
-    qStatusClassic: 'Классическая криптография',
-    qDescClassic: 'Соединение использует традиционные алгоритмы (RSA/ECDHE). Безопасно сейчас, но уязвимо для квантовых компьютеров будущего.',
+    tabQuantum: 'Шифрование',
+    qStatusHttps: 'Соединение зашифровано (HTTPS)',
+    qDescHttps: 'Chrome не сообщает расширениям алгоритм обмена ключами, поэтому Bastion не может проверить его сам. Сам Chrome использует постквантовый X25519MLKEM768 с серверами, которые его поддерживают (Google, Cloudflare и др.).',
     qStatusNoTLS: 'Нет шифрования!',
     qDescNoTLS: 'Соединение не зашифровано (HTTP). Все данные передаются открытым текстом. Не вводите пароли и личные данные.',
-    qStatusUnknown: 'Определение...',
-    qDescUnknown: 'Нажмите кнопку ниже для определения типа шифрования.',
+    qStatusUnknown: 'Нет данных',
+    qDescUnknown: 'Не удалось определить адрес вкладки.',
     qStatusInternal: 'Системная страница',
     qDescInternal: 'Это внутренняя страница браузера, TLS не применяется.',
     qDetailsTitle: 'Параметры соединения',
+    qEncryption: 'Шифрование',
     qProtocol: 'Протокол',
+    qProtocolUnknown: 'Неизвестно',
     qKeyExchange: 'Обмен ключами',
-    qCipher: 'Шифр',
-    qDetecting: 'Определение',
-    qDetectBtn: 'Определить тип шифрования',
-    qDetectFailed: 'Не удалось определить',
+    qKeyExchangeHidden: 'Браузер не сообщает',
     qInfoTitle: 'Что это значит?',
-    qInfoPQLabel: 'Пост-квантовая защита (Q+)',
-    qInfoPQDesc: 'ML-KEM (Kyber) + классический алгоритм = гибридный обмен ключами. Защищает от атаки «Собери сейчас, расшифруй потом».',
-    qInfoClassicLabel: 'Классическая криптография (C)',
-    qInfoClassicDesc: 'RSA / ECDHE — безопасны сегодня, но квантовый компьютер сможет их взломать алгоритмом Шора.',
+    qInfoPQLabel: 'Постквантовая защита',
+    qInfoPQDesc: 'Гибридный обмен ключами X25519MLKEM768 включён в Chrome по умолчанию. Если сервер его поддерживает, трафик защищён от атаки «Собери сейчас, расшифруй потом».',
+    qInfoCheckLabel: 'Как проверить самому',
+    qInfoCheckDesc: 'Откройте DevTools → вкладка Security: там указан протокол и алгоритм обмена ключами для страницы.',
     qInfoHNDLLabel: 'Harvest Now, Decrypt Later',
     qInfoHNDLDesc: 'Спецслужбы уже записывают зашифрованный трафик, чтобы расшифровать его когда появятся квантовые компьютеры.',
+
+    // Phishing warning page
+    warnPageTitle: 'Bastion: возможный фишинг',
+    warnDetectedBy: 'Предупреждение Bastion',
+    warnTitle: 'Возможно, это фишинговый сайт',
+    warnLead: 'Адрес {domain} похож на {brand}, но не принадлежит этой компании.',
+    warnExplain: 'Мошенники копируют сайты известных компаний, чтобы украсть пароли, коды и деньги. Не вводите на этой странице личные данные.',
+    warnUrlLabel: 'Адрес страницы',
+    warnBack: 'Вернуться в безопасное место',
+    warnContinue: 'Я понимаю риск, перейти на сайт',
+    warnContinueNote: 'Bastion запомнит этот сайт и больше не будет о нём предупреждать.',
+    warnBadUrl: 'Адрес сайта некорректен — переход отменён.',
   },
 
   en: {
@@ -255,10 +268,13 @@ const LANGS = {
     active: 'Active',
     noAccess: 'No access',
     noAccessSub: 'Reload the page and try again',
-    scanning: 'Scanning...',
-    loading: 'Loading...',
+    noAccessRestricted: 'The browser does not allow extensions on this page (browser pages, Chrome Web Store, PDF viewer).',
     deleted: 'Deleted',
     deleteError: 'Delete failed',
+    deleteConfirm: 'Delete it? If this is a login token, the site may sign you out.',
+    deleteConfirmYes: 'Delete',
+    deleteConfirmNo: 'Cancel',
+    deleteLogoutWarn: 'The site may sign you out.',
 
     tipsTitle: 'Recommendations',
     tipsSiteTitle: 'Site recommendations',
@@ -312,7 +328,6 @@ const LANGS = {
     logTitle: 'Auto-delete log',
     logEmpty: 'Nothing deleted yet',
     logBlockedTitle: 'Blocked requests',
-    langLabel: 'Language / Язык',
 
     actionDeleteExpired: 'Delete all expired tokens?',
     actionDeleteExpiredDesc: 'They no longer work but remain a security hole',
@@ -378,7 +393,9 @@ const LANGS = {
     eventKeylogger: 'Keylogger detected',
     eventTabNapping: 'Tab-napping blocked',
     eventClipboardSwap: 'Clipboard swap blocked',
-    noEvents: 'No threats detected',
+    eventJsUrlBlock: 'javascript: link blocked',
+    eventDataIframeBlock: 'data: frame blocked',
+    eventOther: 'Protection event',
 
     // Audit tab
     tabAudit: 'Audit',
@@ -430,31 +447,40 @@ const LANGS = {
     auditCheckInfoDesc: 'We look for server versions in headers (Server, X-Powered-By), sensitive data in HTML comments (passwords, TODOs, file paths).',
 
     // Quantum tab
-    tabQuantum: 'Quantum',
-    qStatusPQSafe: 'Quantum-Safe Connection',
-    qDescPQSafe: 'This site uses post-quantum key exchange (ML-KEM/Kyber). Your data is protected against future quantum computers.',
-    qStatusClassic: 'Classic Cryptography',
-    qDescClassic: 'Connection uses traditional algorithms (RSA/ECDHE). Secure today, but vulnerable to future quantum computers.',
+    tabQuantum: 'Encryption',
+    qStatusHttps: 'Encrypted connection (HTTPS)',
+    qDescHttps: 'Chrome does not tell extensions which key exchange a connection uses, so Bastion cannot check it itself. Chrome uses post-quantum X25519MLKEM768 with servers that support it (Google, Cloudflare and others).',
     qStatusNoTLS: 'No Encryption!',
     qDescNoTLS: 'Connection is not encrypted (HTTP). All data is sent in plain text. Do not enter passwords or personal data.',
-    qStatusUnknown: 'Detecting...',
-    qDescUnknown: 'Click the button below to detect encryption type.',
+    qStatusUnknown: 'No data',
+    qDescUnknown: 'Could not read the tab address.',
     qStatusInternal: 'Internal Page',
     qDescInternal: 'This is an internal browser page, TLS does not apply.',
     qDetailsTitle: 'Connection Details',
+    qEncryption: 'Encryption',
     qProtocol: 'Protocol',
+    qProtocolUnknown: 'Unknown',
     qKeyExchange: 'Key Exchange',
-    qCipher: 'Cipher',
-    qDetecting: 'Detecting',
-    qDetectBtn: 'Detect encryption type',
-    qDetectFailed: 'Could not detect',
+    qKeyExchangeHidden: 'Not exposed by the browser',
     qInfoTitle: 'What does this mean?',
-    qInfoPQLabel: 'Post-Quantum Protection (Q+)',
-    qInfoPQDesc: 'ML-KEM (Kyber) + classic algorithm = hybrid key exchange. Protects against "Harvest Now, Decrypt Later" attacks.',
-    qInfoClassicLabel: 'Classic Cryptography (C)',
-    qInfoClassicDesc: 'RSA / ECDHE — secure today, but a quantum computer could break them with Shor\'s algorithm.',
+    qInfoPQLabel: 'Post-quantum protection',
+    qInfoPQDesc: 'Hybrid X25519MLKEM768 key exchange is on by default in Chrome. When the server supports it, traffic is protected against "Harvest Now, Decrypt Later" attacks.',
+    qInfoCheckLabel: 'Check it yourself',
+    qInfoCheckDesc: 'Open DevTools → Security tab: it shows the protocol and key exchange used for the page.',
     qInfoHNDLLabel: 'Harvest Now, Decrypt Later',
     qInfoHNDLDesc: 'Intelligence agencies already record encrypted traffic to decrypt it when quantum computers become available.',
+
+    // Phishing warning page
+    warnPageTitle: 'Bastion: possible phishing',
+    warnDetectedBy: 'Bastion warning',
+    warnTitle: 'This site may be phishing',
+    warnLead: 'The address {domain} looks like {brand}, but does not belong to that company.',
+    warnExplain: 'Scammers copy well-known sites to steal passwords, codes and money. Do not enter personal data on this page.',
+    warnUrlLabel: 'Page address',
+    warnBack: 'Back to safety',
+    warnContinue: 'I understand the risk, continue',
+    warnContinueNote: 'Bastion will remember this site and stop warning about it.',
+    warnBadUrl: 'The site address is invalid, navigation cancelled.',
   }
 };
 
@@ -464,9 +490,21 @@ function t(key) {
   return (LANGS[currentLang] && LANGS[currentLang][key]) || (LANGS.ru[key]) || key;
 }
 
+// Language when the user hasn't picked one: the browser UI language.
+function defaultLang() {
+  try {
+    return chrome.i18n.getUILanguage().toLowerCase().startsWith('ru') ? 'ru' : 'en';
+  } catch { return 'en'; }
+}
+
+function applyLang(lang) {
+  currentLang = LANGS[lang] ? lang : 'en';
+  document.documentElement.lang = currentLang;
+}
+
 function setLang(lang) {
-  currentLang = lang;
-  chrome.storage.local.set({ lang });
+  applyLang(lang);
+  chrome.storage.local.set({ lang: currentLang });
 }
 
 function gradeDesc(grade) {

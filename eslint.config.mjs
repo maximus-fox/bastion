@@ -31,10 +31,13 @@ export default [
     languageOptions: { globals: { DEFAULT_SETTINGS: 'readonly' } },
   },
   {
-    // popup.html loads i18n.js before popup.js
-    files: ['popup.js'],
+    // popup.html and warning.html load i18n.js first
+    files: ['popup.js', 'warning.js'],
     languageOptions: {
-      globals: { LANGS: 'readonly', currentLang: 'writable', t: 'readonly', setLang: 'readonly', gradeDesc: 'readonly' },
+      globals: {
+        LANGS: 'readonly', currentLang: 'writable', t: 'readonly', setLang: 'readonly',
+        gradeDesc: 'readonly', defaultLang: 'readonly', applyLang: 'readonly',
+      },
     },
   },
   {
