@@ -705,26 +705,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'getAuditResults') {
     chrome.storage.session.get('auditResults', (d) => { sendResponse((d.auditResults || {})[message.tabId] || null); });
     return true;
-  } else if (message.action === 'startActiveSqli') {
-    runActiveSqliTest(message.url, message.params, message.tabId).then(r => sendResponse(r));
-    return true;
-  } else if (message.action === 'startActiveXss') {
-    runActiveXssTest(message.url, message.params, message.tabId).then(r => sendResponse(r));
-    return true;
   } else if (message.action === 'startActiveAll') {
-    Promise.all([
-      runActiveSqliTest(message.url, message.params, message.tabId),
-      runActiveXssTest(message.url, message.params, message.tabId),
-      runActiveNoSqlTest(message.url, message.params, message.tabId),
-      runActiveSstiTest(message.url, message.params, message.tabId),
-      runActivePathTest(message.url, message.params, message.tabId),
-      runActiveCmdInjTest(message.url, message.params, message.tabId),
-      runActiveFormTest(message.url, message.forms || [], message.tabId)
-    ]).then(([sqli, xss, nosql, ssti, path, cmdi, formResults]) => sendResponse({
-      sqli: [...sqli, ...nosql],
-      xss,
-      formResults: [...formResults, ...ssti, ...path, ...cmdi]
-    }));
+    runActiveAudit(message, sender).then(sendResponse, (e) => sendResponse({ error: e.message }));
     return true;
   } else if (message.action === 'reportSecurityInfo') {
     checkQuantumStatus(message.tabId, message.securityInfo);
@@ -972,9 +954,57 @@ const PATH_TRAVERSAL_PAYLOADS = [
   { payload: '..%252f..%252f..%252fetc/passwd', check: /root:.*:0:0/i },
 ];
 
+// Active tests send attack payloads, so they run only when an extension page
+// asks, only against the active tab's own origin, and never submit POST forms
+// (those can change data) or anything the user typed.
+async function prepareActiveAudit(message, sender) {
+  // Extension pages only: content scripts run inside sites and must not trigger this
+  if (sender.id !== chrome.runtime.id || !String(sender.url).startsWith(chrome.runtime.getURL(''))) {
+    throw new Error('forbidden');
+  }
+  const tab = await chrome.tabs.get(message.tabId);
+  const origin = new URL(tab.url).origin;
+  const page = new URL(message.url);
+  if (!/^https?:$/.test(page.protocol) || page.origin !== origin) throw new Error('origin mismatch');
+  const sameOrigin = (u) => { try { return new URL(u).origin === origin; } catch { return false; } };
+  const forms = (Array.isArray(message.forms) ? message.forms : [])
+    .filter((f) => f && f.method === 'GET' && sameOrigin(f.action))
+    .map((f) => ({ ...f, inputs: (f.inputs || []).filter((i) => i && i.name && i.type !== 'password') }))
+    .filter((f) => f.inputs.length > 0);
+  const params = (Array.isArray(message.params) ? message.params : [])
+    .filter((p) => p && typeof p.key === 'string')
+    .map((p) => ({ key: p.key, value: String(p.value ?? '') }));
+  return { url: page.href, params, forms, tabId: tab.id };
+}
+
+async function runActiveAudit(message, sender) {
+  const { url, params, forms, tabId } = await prepareActiveAudit(message, sender);
+  // One suite at a time: parallel suites against the same host skew the
+  // time-based checks and multiply the load on the site.
+  const sqli = await runActiveSqliTest(url, params, tabId);
+  const xss = await runActiveXssTest(url, params, tabId);
+  const nosql = await runActiveNoSqlTest(url, params, tabId);
+  const ssti = await runActiveSstiTest(url, params, tabId);
+  const path = await runActivePathTest(url, params, tabId);
+  const cmdi = await runActiveCmdInjTest(url, params, tabId);
+  const formResults = await runActiveFormTest(url, forms, tabId);
+  return { sqli: [...sqli, ...nosql], xss, formResults: [...formResults, ...ssti, ...path, ...cmdi] };
+}
+
+// Response of the untouched page; a signature that is already there is not evidence.
+async function fetchBaselineText(pageUrl) {
+  try {
+    const resp = await fetch(pageUrl, {
+      method: 'GET', credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(5000)
+    });
+    return (await resp.text()).substring(0, 50000);
+  } catch { return ''; }
+}
+
 async function runActiveSqliTest(pageUrl, params, tabId) {
   const results = [];
   if (!params || params.length === 0) return results;
+  const baseText = await fetchBaselineText(pageUrl);
 
   // Phase 1: Error-based testing
   for (const param of params.slice(0, 5)) {
@@ -993,7 +1023,7 @@ async function runActiveSqliTest(pageUrl, params, tabId) {
         const text = await resp.text();
         const textSlice = text.substring(0, 50000);
         for (const pattern of SQL_ERROR_PATTERNS) {
-          if (pattern.test(textSlice)) {
+          if (pattern.test(textSlice) && !pattern.test(baseText)) {
             results.push({
               type: 'sqli', subtype: 'active_error', severity: 'critical',
               param: param.key, payload: payload,
@@ -1254,6 +1284,7 @@ async function runActiveSstiTest(pageUrl, params, tabId) {
 async function runActivePathTest(pageUrl, params, tabId) {
   const results = [];
   if (!params || params.length === 0) return results;
+  const baseText = await fetchBaselineText(pageUrl);
 
   for (const param of params.slice(0, 5)) {
     let found = false;
@@ -1267,7 +1298,7 @@ async function runActivePathTest(pageUrl, params, tabId) {
           redirect: 'follow', signal: AbortSignal.timeout(5000)
         });
         const text = (await resp.text()).substring(0, 50000);
-        if (pt.check.test(text)) {
+        if (pt.check.test(text) && !pt.check.test(baseText)) {
           results.push({
             type: 'path_traversal', subtype: 'active_path', severity: 'critical',
             param: param.key, payload: pt.payload,
@@ -1310,6 +1341,19 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
   for (const form of forms.slice(0, 3)) {
     const testInputs = form.inputs.slice(0, 3);
 
+    // Baseline for form — send normal value to get base response
+    let formBaselineText = '';
+    const formBaselineNoSqlPatterns = new Set();
+    if (testInputs.length > 0) {
+      try {
+        formBaselineText = await sendFormPayload(form, testInputs[0].name, 'bastion_baseline');
+      } catch {}
+      for (const pattern of NOSQL_ERROR_PATTERNS) {
+        if (pattern.test(formBaselineText)) formBaselineNoSqlPatterns.add(pattern.source);
+      }
+    }
+
+
     // SQLi test
     for (const input of testInputs) {
       let found = false;
@@ -1318,7 +1362,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         try {
           const text = await sendFormPayload(form, input.name, payload);
           for (const pattern of SQL_ERROR_PATTERNS) {
-            if (pattern.test(text)) {
+            if (pattern.test(text) && !pattern.test(formBaselineText)) {
               results.push({
                 type: 'sqli', subtype: 'active_form_error', severity: 'critical',
                 param: input.name, payload,
@@ -1349,18 +1393,6 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         } catch {}
       }
       await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Baseline for form — send normal value to get base response
-    let formBaselineText = '';
-    const formBaselineNoSqlPatterns = new Set();
-    if (testInputs.length > 0) {
-      try {
-        formBaselineText = await sendFormPayload(form, testInputs[0].name, 'bastion_baseline');
-      } catch {}
-      for (const pattern of NOSQL_ERROR_PATTERNS) {
-        if (pattern.test(formBaselineText)) formBaselineNoSqlPatterns.add(pattern.source);
-      }
     }
 
     // SSTI test
@@ -1406,7 +1438,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
       for (const pt of FORM_PATH_PAYLOADS) {
         try {
           const text = await sendFormPayload(form, input.name, pt.payload);
-          if (pt.check.test(text)) {
+          if (pt.check.test(text) && !pt.check.test(formBaselineText)) {
             results.push({
               type: 'path_traversal', subtype: 'active_form_path', severity: 'critical',
               param: input.name, payload: pt.payload,
@@ -1426,7 +1458,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         if (found) break;
         try {
           const text = await sendFormPayload(form, input.name, cmd.payload);
-          if (cmd.check.test(text)) {
+          if (cmd.check.test(text) && !cmd.check.test(formBaselineText)) {
             results.push({
               type: 'cmdi', subtype: 'active_form_cmdi', severity: 'critical',
               param: input.name, payload: cmd.payload,
@@ -1451,28 +1483,18 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
   return deduped;
 }
 
-// Helper: send payload to a form field
+// Helper: send payload to a form field (GET forms only, see prepareActiveAudit).
+// Other fields get a placeholder so nothing the user typed leaves the page.
 async function sendFormPayload(form, targetField, payload) {
-  const body = new URLSearchParams();
+  if (form.method !== 'GET') throw new Error('only GET forms are tested');
+  const url = new URL(form.action);
   for (const inp of form.inputs) {
-    body.set(inp.name, inp.name === targetField ? payload : (inp.value || 'test'));
+    url.searchParams.set(inp.name, inp.name === targetField ? payload : 'test');
   }
-  const fetchOpts = {
-    credentials: 'omit', redirect: 'follow',
+  const resp = await fetch(url.href, {
+    method: 'GET', credentials: 'omit', redirect: 'follow',
     signal: AbortSignal.timeout(5000)
-  };
-  let resp;
-  if (form.method === 'POST') {
-    fetchOpts.method = 'POST';
-    fetchOpts.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
-    fetchOpts.body = body.toString();
-    resp = await fetch(form.action, fetchOpts);
-  } else {
-    const url = new URL(form.action);
-    for (const [k, v] of body) url.searchParams.set(k, v);
-    fetchOpts.method = 'GET';
-    resp = await fetch(url.href, fetchOpts);
-  }
+  });
   return (await resp.text()).substring(0, 50000);
 }
 

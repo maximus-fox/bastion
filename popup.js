@@ -996,6 +996,9 @@ let _auditActiveForm = null;
 let _auditUrlParams = null;
 let _auditForms = null;
 let _auditUrl = null;
+// Survive loadAudit() re-renders (e.g. language switch) while a test runs.
+let _auditRunning = false;
+let _auditError = null;
 
 function loadAudit() {
   auditContent.innerHTML = `<div class="loading">${t('auditLoading')}</div>`;
@@ -1358,18 +1361,35 @@ function renderAudit() {
   // Active test button (SQLi + XSS + Forms combined)
   const activeDone = _auditActive || _auditActiveXss || _auditActiveForm;
   const hasParams = _auditUrlParams && _auditUrlParams.length > 0;
-  const hasForms = _auditForms && _auditForms.length > 0;
-  if ((hasParams || hasForms) && !activeDone) {
+  // Only GET forms are tested (background enforces the same rule)
+  const testableForms = (_auditForms || []).filter(f => f.method === 'GET');
+  const hasForms = testableForms.length > 0;
+  if (_auditRunning) {
+    html += `
+      <div class="audit-action">
+        <button class="audit-btn" disabled>${svgIcon('search')} ${t('auditTesting')}</button>
+      </div>`;
+  } else if ((hasParams || hasForms) && !activeDone) {
     const targets = [];
     if (hasParams) targets.push(`${_auditUrlParams.length} URL`);
-    if (hasForms) targets.push(`${_auditForms.length} ${t('auditForms')}`);
+    if (hasForms) targets.push(`${testableForms.length} ${t('auditForms')}`);
+    let host = '';
+    try { host = new URL(_auditUrl).host; } catch {}
     html += `
       <div class="audit-action">
         <button class="audit-btn" id="btnActiveTest">${svgIcon('search')} ${t('auditActiveTest')}</button>
         <div class="audit-action-desc">${t('auditActiveTestDesc')} (${targets.join(' + ')})</div>
+        <div class="audit-confirm" id="auditConfirm" hidden>
+          <div class="audit-note">${svgIcon('warn')} ${escapeHtml(t('auditConfirm').replace('{host}', host))}</div>
+          <button class="audit-btn" id="btnActiveConfirm">${t('auditConfirmRun')}</button>
+          <button class="audit-btn" id="btnActiveCancel">${t('auditConfirmCancel')}</button>
+        </div>
       </div>`;
   } else if (!hasParams && !hasForms && !activeDone) {
     html += `<div class="audit-note">${t('auditNoParams')}</div>`;
+  }
+  if (_auditError) {
+    html += `<div class="audit-note" style="color:#e74c3c;">${svgIcon('warn')} ${t('auditActiveError')}: ${escapeHtml(_auditError)}</div>`;
   }
   if (activeDone) {
     const activeFindings = [...(_auditActive || []), ...(_auditActiveXss || []), ...(_auditActiveForm || [])];
@@ -1383,12 +1403,23 @@ function renderAudit() {
 
   auditContent.innerHTML = html;
 
-  // Active test button handler — runs both SQLi + XSS
+  // Active test: first click asks for confirmation naming the target host
   const btn = document.getElementById('btnActiveTest');
   if (btn) {
+    const confirmBox = document.getElementById('auditConfirm');
     btn.addEventListener('click', () => {
-      btn.disabled = true;
-      btn.textContent = t('auditTesting');
+      btn.hidden = true;
+      confirmBox.hidden = false;
+    });
+    document.getElementById('btnActiveCancel').addEventListener('click', () => {
+      btn.hidden = false;
+      confirmBox.hidden = true;
+    });
+    document.getElementById('btnActiveConfirm').addEventListener('click', () => {
+      if (_auditRunning) return;
+      _auditRunning = true;
+      _auditError = null;
+      renderAudit();
       msgBg({
         action: 'startActiveAll',
         url: _auditUrl,
@@ -1396,9 +1427,14 @@ function renderAudit() {
         forms: _auditForms,
         tabId: currentTabId
       }, (results) => {
-        _auditActive = (results && results.sqli) || [];
-        _auditActiveXss = (results && results.xss) || [];
-        _auditActiveForm = (results && results.formResults) || [];
+        _auditRunning = false;
+        if (!results || results.error) {
+          _auditError = (results && results.error) || 'no response';
+        } else {
+          _auditActive = results.sqli || [];
+          _auditActiveXss = results.xss || [];
+          _auditActiveForm = results.formResults || [];
+        }
         renderAudit();
       });
     });

@@ -1174,12 +1174,9 @@ function auditPage() {
       const inputs = [];
       for (const input of form.querySelectorAll('input[name], textarea[name], select[name]')) {
         const type = (input.getAttribute('type') || 'text').toLowerCase();
-        if (type === 'submit' || type === 'button' || type === 'hidden' || type === 'file' || type === 'image') continue;
-        inputs.push({
-          name: input.getAttribute('name'),
-          type: type,
-          value: input.value || ''
-        });
+        // Never collect passwords; values stay on the page (the audit sends placeholders)
+        if (['submit', 'button', 'hidden', 'file', 'image', 'password'].includes(type)) continue;
+        inputs.push({ name: input.getAttribute('name'), type });
       }
       if (inputs.length > 0) {
         // Resolve absolute action URL
