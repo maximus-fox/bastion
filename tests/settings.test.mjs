@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './helpers.mjs';
-import { launchExtension } from './harness.mjs';
+import { launchExtension, waitFor } from './harness.mjs';
 
 let ext;
-before(async () => { ext = await launchExtension(); });
+before(async () => {
+  ext = await launchExtension();
+  // let the install-time migration finish so it can't overwrite seeded storage
+  await waitFor(() => ext.sw(() => chrome.storage.local.get('_version').then((s) => s._version)));
+});
 after(() => ext?.close());
 
 const migrate = (stored, details) => ext.sw(async ({ stored, details }) => {
