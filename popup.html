@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
+  <title>Bastion</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -15,40 +16,40 @@
   </div>
   <div class="site-url" id="siteUrl">...</div>
 
-  <div class="tabs">
-    <div class="tab active" data-tab="scanner" id="tabScanner" title="Scanner" aria-label="Scanner"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M15.51 15.56a5 5 0 1 0 -3.51 1.44" /><path d="M18.832 17.86a9 9 0 1 0 -6.832 3.14" /><path d="M12 12v9" /></svg></div>
-    <div class="tab" data-tab="headers" id="tabHeaders" title="Headers" aria-label="Headers"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h8" /><path d="M13 9h5" /><path d="M13 15h8" /><path d="M13 19h5" /><path d="M3 4m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z" /><path d="M3 14m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z" /></svg></div>
-    <div class="tab" data-tab="history" id="tabHistory" title="History" aria-label="History"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8l0 4l2 2" /><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5" /></svg></div>
-    <div class="tab" data-tab="quantum" id="tabQuantum" title="Quantum" aria-label="Quantum"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" /><path d="M12 21l0 .01" /><path d="M3 9l0 .01" /><path d="M21 9l0 .01" /><path d="M8 20.1a9 9 0 0 1 -5 -7.1" /><path d="M16 20.1a9 9 0 0 0 5 -7.1" /><path d="M6.2 5a9 9 0 0 1 11.4 0" /></svg></div>
-    <div class="tab" data-tab="audit" id="tabAudit" title="Audit" aria-label="Audit"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h-2a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-12a2 2 0 0 0 -2 -2h-2" /><path d="M9 3m0 2a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v0a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2z" /><path d="M9 14l2 2l4 -4" /></svg></div>
-    <div class="tab" data-tab="protect" id="tabProtect" title="Protect" aria-label="Protect"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3" /><path d="M12 11m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M12 12l0 2.5" /></svg></div>
+  <div class="tabs" role="tablist">
+    <div class="tab active" role="tab" aria-selected="true" tabindex="0" aria-controls="tab-scanner" data-tab="scanner" id="tabScanner" title="Scanner" aria-label="Scanner"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M15.51 15.56a5 5 0 1 0 -3.51 1.44" /><path d="M18.832 17.86a9 9 0 1 0 -6.832 3.14" /><path d="M12 12v9" /></svg></div>
+    <div class="tab" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-headers" data-tab="headers" id="tabHeaders" title="Headers" aria-label="Headers"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h8" /><path d="M13 9h5" /><path d="M13 15h8" /><path d="M13 19h5" /><path d="M3 4m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z" /><path d="M3 14m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z" /></svg></div>
+    <div class="tab" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-history" data-tab="history" id="tabHistory" title="History" aria-label="History"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8l0 4l2 2" /><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5" /></svg></div>
+    <div class="tab" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-quantum" data-tab="quantum" id="tabQuantum" title="Quantum" aria-label="Quantum"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" /><path d="M12 21l0 .01" /><path d="M3 9l0 .01" /><path d="M21 9l0 .01" /><path d="M8 20.1a9 9 0 0 1 -5 -7.1" /><path d="M16 20.1a9 9 0 0 0 5 -7.1" /><path d="M6.2 5a9 9 0 0 1 11.4 0" /></svg></div>
+    <div class="tab" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-audit" data-tab="audit" id="tabAudit" title="Audit" aria-label="Audit"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h-2a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-12a2 2 0 0 0 -2 -2h-2" /><path d="M9 3m0 2a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v0a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2z" /><path d="M9 14l2 2l4 -4" /></svg></div>
+    <div class="tab" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-protect" data-tab="protect" id="tabProtect" title="Protect" aria-label="Protect"><svg class="bic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3" /><path d="M12 11m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M12 12l0 2.5" /></svg></div>
   </div>
 
-  <div id="tab-audit" class="tab-content">
+  <div id="tab-audit" class="tab-content" role="tabpanel" aria-labelledby="tabAudit">
     <div id="auditContent"><div class="loading">...</div></div>
   </div>
 
-  <div id="tab-scanner" class="tab-content active">
+  <div id="tab-scanner" class="tab-content active" role="tabpanel" aria-labelledby="tabScanner">
     <div id="scannerContent"><div class="loading">...</div></div>
   </div>
 
-  <div id="tab-headers" class="tab-content">
+  <div id="tab-headers" class="tab-content" role="tabpanel" aria-labelledby="tabHeaders">
     <div id="headersContent"><div class="loading">...</div></div>
   </div>
 
-  <div id="tab-history" class="tab-content">
+  <div id="tab-history" class="tab-content" role="tabpanel" aria-labelledby="tabHistory">
     <div id="historyContent"><div class="loading">...</div></div>
   </div>
 
-  <div id="tab-quantum" class="tab-content">
+  <div id="tab-quantum" class="tab-content" role="tabpanel" aria-labelledby="tabQuantum">
     <div id="quantumContent"><div class="loading">...</div></div>
   </div>
 
-  <div id="tab-protect" class="tab-content">
+  <div id="tab-protect" class="tab-content" role="tabpanel" aria-labelledby="tabProtect">
     <div id="protectContent"><div class="loading">...</div></div>
   </div>
 
-  <div class="footer">Bastion v2.2 by Max</div>
+  <div class="footer">Bastion <span id="footerVersion"></span> by Max</div>
   <div class="toast" id="toast"></div>
 
   <script src="i18n.js"></script>

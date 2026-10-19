@@ -1,6 +1,6 @@
 /**
  * Bastion — Content Script (ISOLATED world)
- * Scanner, anti-phishing overlay, bridge for injected.js
+ * Storage scanner, anti-phishing detection, cookie banners, page audit
  */
 
 // =============================================
@@ -106,13 +106,15 @@ function scanStorage() {
 function autoDeleteExpired(findings) {
   const deleted = [];
   for (const f of findings) {
-    if (f.type === 'jwt' && f.expired === true) {
-      try {
-        const store = f.storage === 'sessionStorage' ? sessionStorage : localStorage;
-        store.removeItem(f.key);
-        deleted.push({ key: f.key, storage: f.storage });
-      } catch {}
-    }
+    // Web storage only: a cookie JWT shares its name with unrelated localStorage keys
+    if (f.type !== 'jwt' || f.expired !== true) continue;
+    if (f.storage !== 'localStorage' && f.storage !== 'sessionStorage') continue;
+    try {
+      const store = f.storage === 'sessionStorage' ? sessionStorage : localStorage;
+      if (store.getItem(f.key) === null) continue;
+      store.removeItem(f.key);
+      deleted.push({ key: f.key, storage: f.storage });
+    } catch {}
   }
   if (deleted.length > 0) {
     chrome.runtime.sendMessage({ action: 'autoDeletedExpired', deleted, url: location.href }).catch(() => {});
@@ -123,163 +125,227 @@ function autoDeleteExpired(findings) {
 // =============================================
 // ANTI-PHISHING — проверка домена
 // =============================================
-const BRAND_PATTERNS = [
-  { brand: 'Google', legit: ['google.com','google.ru','google.dev','google.ai','google.co','gmail.com','youtube.com','googleapis.com','withgoogle.com','gstatic.com','googlevideo.com'], pattern: /go+g[li1|]+e|gma[li1]+l|youtu[b8]e/i },
-  { brand: 'Apple', legit: ['apple.com','icloud.com'], pattern: /app[li1]+e|[li1]c[li1]oud/i },
-  { brand: 'Microsoft', legit: ['microsoft.com','outlook.com','live.com','office.com','office365.com'], pattern: /m[li1]crosoft|out[li1]ook|hotma[li1]+l/i },
-  { brand: 'Facebook', legit: ['facebook.com','fb.com','instagram.com','meta.com'], pattern: /faceb[o0]+k|[li1]nstagram/i },
-  { brand: 'Amazon', legit: ['amazon.com','amazon.ru','aws.amazon.com'], pattern: /amaz[o0]n|4maz[o0]n/i },
-  { brand: 'PayPal', legit: ['paypal.com'], pattern: /paypa[li1]+|payp[a4][li1]/i },
-  { brand: 'Netflix', legit: ['netflix.com'], pattern: /netf[li1]+[xk]|n[e3]tf[li1]ix/i },
-  { brand: 'Twitter/X', legit: ['twitter.com','x.com'], pattern: /tw[li1]+tter/i },
-  { brand: 'Telegram', legit: ['telegram.org','t.me','web.telegram.org'], pattern: /te[li1]+egram|t[e3][li1]egr[a4]m/i },
-  { brand: 'Sberbank', legit: ['sberbank.ru','online.sberbank.ru','sber.ru'], pattern: /s[b8]er[b8]ank|c[b8]ep[b8]ahk/i },
-  { brand: 'Tinkoff/T-Bank', legit: ['tinkoff.ru','tbank.ru','tinkoff.com'], pattern: /t[li1]nk[o0]ff|t[b8]ank/i },
-  { brand: 'VTB', legit: ['vtb.ru','online.vtb.ru'], pattern: /v[t7][b8]/i },
-  { brand: 'Alfa-Bank', legit: ['alfabank.ru','alfa.me'], pattern: /a[li1]fa[b8]ank|a[li1]+pha[b8]ank/i },
-  { brand: 'WhatsApp', legit: ['whatsapp.com','web.whatsapp.com'], pattern: /wh[a4]ts[a4]pp|wh[a4]ts[a4]+p/i },
-  { brand: 'Binance', legit: ['binance.com','binance.us'], pattern: /b[li1]n[a4]nce|b[li1]+nance/i },
-];
+// --- phishing detection: pure functions, unit-tested in tests/content.test.mjs ---
 
-function getBaseDomain(hostname) {
-  const parts = hostname.split('.');
-  const doubleTlds = ['co.uk','com.br','co.jp','com.au','co.in','co.kr','co.nz','com.cn','com.mx','com.tr','org.uk','net.uk'];
-  const last2 = parts.slice(-2).join('.');
-  if (doubleTlds.includes(last2) && parts.length >= 3) return parts.slice(-3).join('.');
+// Multi-label public suffixes: ccTLD second levels plus hosting platforms where
+// every subdomain has a different owner. A compact subset of the Public Suffix List.
+const MULTI_LABEL_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'me.uk', 'ltd.uk', 'plc.uk', 'net.uk', 'gov.uk', 'ac.uk', 'nhs.uk',
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'co.nz', 'org.nz', 'net.nz',
+  'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp', 'co.kr', 'or.kr', 'go.kr',
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'com.hk', 'com.tw', 'com.sg', 'com.my',
+  'com.ph', 'com.vn', 'co.th', 'in.th', 'co.id', 'or.id', 'co.in', 'net.in', 'org.in',
+  'gov.in', 'ac.in', 'com.pk', 'com.bd', 'com.np', 'com.lk',
+  'com.br', 'net.br', 'org.br', 'gov.br', 'com.ar', 'com.mx', 'org.mx', 'gob.mx',
+  'com.co', 'com.pe', 'com.ve', 'com.uy', 'com.ec',
+  'com.tr', 'net.tr', 'org.tr', 'gov.tr', 'com.ua', 'org.ua', 'net.ua', 'gov.ua',
+  'com.by', 'com.kz', 'org.kz', 'co.il', 'org.il', 'ac.il', 'gov.il',
+  'com.sa', 'com.eg', 'com.ng', 'co.za', 'org.za', 'co.ke', 'com.gh',
+  'com.pl', 'net.pl', 'org.pl', 'co.at', 'or.at', 'com.es', 'org.es', 'com.pt',
+  'com.gr', 'com.cy', 'co.hu', 'com.ro', 'co.rs',
+  'msk.ru', 'spb.ru', 'com.ru', 'net.ru', 'org.ru',
+  'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'vercel.app', 'netlify.app',
+  'herokuapp.com', 'web.app', 'firebaseapp.com', 'appspot.com', 'blogspot.com',
+  'azurewebsites.net', 'cloudfront.net', 's3.amazonaws.com', 'glitch.me',
+  'repl.co', 'onrender.com', 'fly.dev', 'wixsite.com', 'weebly.com', 'myshopify.com',
+]);
+
+function getRegistrableDomain(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  if (/^[\d.]+$/.test(host) || host.includes(':')) return host; // IPv4 / IPv6
+  const parts = host.split('.');
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (MULTI_LABEL_SUFFIXES.has(parts.slice(i).join('.'))) return parts.slice(i - 1).join('.');
+  }
   return parts.slice(-2).join('.');
 }
 
-function checkPhishing() {
-  const hostname = location.hostname;
-  const baseDomain = getBaseDomain(hostname);
-
-  for (const brand of BRAND_PATTERNS) {
-    // Если это легитимный домен — пропускаем
-    if (brand.legit.some(d => baseDomain === d || hostname.endsWith('.' + d))) continue;
-
-    // Проверяем паттерн
-    if (brand.pattern.test(baseDomain) || brand.pattern.test(hostname)) {
-      showPhishingWarning(brand.brand, hostname);
-      chrome.runtime.sendMessage({
-        action: 'phishingDetected',
-        brand: brand.brand,
-        domain: hostname,
-        url: location.href
-      }).catch(() => {});
-      return;
+// RFC 3492 decoder for one "xn--" label (without the prefix).
+function punycodeDecode(input) {
+  const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
+  const output = [];
+  let n = 128, i = 0, bias = 72;
+  const basic = Math.max(input.lastIndexOf('-'), 0);
+  for (let j = 0; j < basic; j++) output.push(input.charCodeAt(j));
+  for (let idx = basic > 0 ? basic + 1 : 0; idx < input.length;) {
+    const oldi = i;
+    for (let w = 1, k = base; ; k += base) {
+      if (idx >= input.length) throw new RangeError('bad punycode');
+      const c = input.charCodeAt(idx++);
+      const digit = c - 48 >>> 0 < 10 ? c - 22 : c - 65 >>> 0 < 26 ? c - 65 : c - 97 >>> 0 < 26 ? c - 97 : base;
+      if (digit >= base) throw new RangeError('bad punycode');
+      i += digit * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (digit < t) break;
+      w *= base - t;
     }
+    const out = output.length + 1;
+    let delta = oldi === 0 ? Math.floor((i - oldi) / damp) : (i - oldi) >> 1;
+    delta += Math.floor(delta / out);
+    let k = 0;
+    for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
+    bias = Math.floor(k + ((base - tMin + 1) * delta) / (delta + skew));
+    n += Math.floor(i / out);
+    i %= out;
+    output.splice(i++, 0, n);
   }
-
-  // Проверка гомографических атак (кириллица в латинских доменах)
-  const hasCyrillic = /[\u0400-\u04FF]/.test(hostname);
-  const hasLatin = /[a-zA-Z]/.test(hostname);
-  if (hasCyrillic && hasLatin) {
-    showPhishingWarning('Mixed Script (Homograph)', hostname);
-    chrome.runtime.sendMessage({
-      action: 'phishingDetected',
-      brand: 'Homograph Attack',
-      domain: hostname,
-      url: location.href
-    }).catch(() => {});
-    return;
-  }
-
-  // Punycode (xn--) domains — browser may display IDN as unicode, check raw hostname
-  if (hostname.includes('xn--')) {
-    // Decode punycode and re-check against brand patterns
-    try {
-      const decoded = new URL(location.href).hostname; // browser already decodes
-      for (const brand of BRAND_PATTERNS) {
-        if (brand.legit.some(d => baseDomain === d || hostname.endsWith('.' + d))) continue;
-        if (brand.pattern.test(decoded) || brand.pattern.test(baseDomain)) {
-          showPhishingWarning(brand.brand + ' (Punycode)', hostname);
-          chrome.runtime.sendMessage({
-            action: 'phishingDetected',
-            brand: brand.brand + ' (IDN/Punycode)',
-            domain: hostname,
-            url: location.href
-          }).catch(() => {});
-          return;
-        }
-      }
-    } catch {}
-  }
+  return String.fromCodePoint(...output);
 }
 
-function showPhishingWarning(brand, domain) {
-  const overlay = document.createElement('div');
-  overlay.id = 'tg-phishing-overlay';
-  overlay.innerHTML = `
-    <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(200,0,0,0.95);z-index:2147483647;
-      display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;color:#fff;padding:40px;text-align:center;">
-      <div style="font-size:72px;margin-bottom:20px;">&#9888;&#65039;</div>
-      <div style="font-size:28px;font-weight:700;margin-bottom:12px;">Bastion: Phishing Detected!</div>
-      <div style="font-size:18px;margin-bottom:8px;opacity:0.9;">This site <b>${domain}</b></div>
-      <div style="font-size:18px;margin-bottom:24px;opacity:0.9;">is pretending to be <b>${brand}</b></div>
-      <div style="font-size:14px;max-width:500px;line-height:1.5;opacity:0.8;margin-bottom:30px;">
-        The domain name looks like a well-known brand but it's fake. This is likely a phishing site designed to steal your credentials. Do NOT enter any passwords or personal data.
-      </div>
-      <div style="display:flex;gap:12px;">
-        <button id="tg-phish-back" style="padding:12px 32px;font-size:16px;font-weight:600;background:#fff;color:#c00;border:none;border-radius:8px;cursor:pointer;">
-          &#8592; Go Back (Safe)
-        </button>
-        <button id="tg-phish-dismiss" style="padding:12px 32px;font-size:14px;background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:8px;cursor:pointer;">
-          I understand the risk, continue
-        </button>
-      </div>
-    </div>`;
-  document.documentElement.appendChild(overlay);
+function decodeLabel(label) {
+  if (!label.startsWith('xn--')) return label;
+  try { return punycodeDecode(label.slice(4)); } catch { return label; }
+}
 
-  overlay.addEventListener('click', (e) => {
-    if (e.target.id === 'tg-phish-back' || e.target.closest('#tg-phish-back')) {
-      if (history.length > 1) history.back(); else window.close();
+// Cyrillic / Greek letters that render like Latin ones
+const CONFUSABLES = {
+  'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'п': 'n',
+  'р': 'p', 'с': 'c', 'т': 't', 'у': 'y', 'х': 'x', 'ь': 'b', 'і': 'i', 'ї': 'i', 'ј': 'j',
+  'ԁ': 'd', 'ӏ': 'l', 'ѕ': 's', 'һ': 'h', 'ԛ': 'q', 'ԝ': 'w', 'ү': 'y', 'ɡ': 'g',
+  'α': 'a', 'β': 'b', 'ε': 'e', 'η': 'n', 'ι': 'i', 'κ': 'k', 'ν': 'v', 'ο': 'o', 'ρ': 'p',
+  'τ': 't', 'υ': 'u', 'χ': 'x', 'ω': 'w',
+};
+const NON_LATIN_LETTER = /[Ͱ-ϿЀ-ӿԀ-ԯ]/;
+
+// Digit and letter-pair lookalikes. 'skeleton' keeps length-ish structure for
+// prefix checks, 'squash' also folds repeats (gooogle → gogle).
+function skeleton(s) {
+  return s.toLowerCase().replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/0/g, 'o')
+    .replace(/[1i|!]/g, 'l').replace(/3/g, 'e').replace(/4/g, 'a').replace(/5/g, 's')
+    .replace(/7/g, 't').replace(/8/g, 'b');
+}
+function squash(s) {
+  return skeleton(s).replace(/(.)\1+/g, '$1');
+}
+
+const PHISH_WORDS = ['login', 'logon', 'signin', 'secure', 'security', 'verify', 'verification',
+  'account', 'accounts', 'support', 'update', 'wallet', 'auth', 'help', 'service', 'services',
+  'online', 'id', 'bonus', 'gift', 'pay', 'bank', 'confirm', 'recovery', 'unlock'];
+
+// True when s is made only of phishing words (e.g. "idverify", "securelogin").
+function isPhishWords(s, words) {
+  if (!s) return false;
+  const ok = [true];
+  for (let i = 0; i < s.length; i++) {
+    if (!ok[i]) continue;
+    for (const w of words) if (s.startsWith(w, i)) ok[i + w.length] = true;
+  }
+  return !!ok[s.length];
+}
+const PHISH_WORDS_SKEL = PHISH_WORDS.map(skeleton);
+
+// cc: brand labels that are legitimate on any country TLD (google.de, amazon.co.uk).
+// common: dictionary words; "apple-tree.ru" is only suspicious next to a phishing word.
+const BRANDS = [
+  { brand: 'Google', names: ['google', 'gmail', 'youtube'], cc: ['google', 'youtube'],
+    legit: ['google.com', 'gmail.com', 'youtube.com', 'youtu.be', 'googleapis.com', 'withgoogle.com',
+      'gstatic.com', 'googlevideo.com', 'googlesource.com', 'googleusercontent.com', 'google.dev',
+      'google.ai', 'google-analytics.com', 'youtube-nocookie.com', 'google.github.io'] },
+  { brand: 'Apple', names: ['apple', 'icloud'], common: ['apple'],
+    legit: ['apple.com', 'icloud.com', 'apple.com.cn', 'icloud.com.cn', 'apple.github.io'] },
+  { brand: 'Microsoft', names: ['microsoft', 'outlook', 'hotmail', 'office365'], common: ['outlook'],
+    cc: ['microsoft', 'outlook', 'hotmail', 'live'],
+    legit: ['microsoft.com', 'microsoftonline.com', 'live.com', 'live.net', 'outlook.com', 'office.com',
+      'office365.com', 'msn.com', 'hotmail.com', 'microsoft.github.io'] },
+  { brand: 'Facebook', names: ['facebook', 'instagram'],
+    legit: ['facebook.com', 'fb.com', 'instagram.com', 'meta.com', 'fbcdn.net', 'cdninstagram.com',
+      'facebook.net', 'messenger.com', 'facebook.github.io'] },
+  { brand: 'Amazon', names: ['amazon'], common: ['amazon'], cc: ['amazon'],
+    legit: ['amazon.com', 'amazonaws.com', 'media-amazon.com', 'ssl-images-amazon.com',
+      'amazon-adsystem.com', 'amazontrust.com'] },
+  { brand: 'PayPal', names: ['paypal'], legit: ['paypal.com', 'paypal.me', 'paypalobjects.com', 'paypal-community.com'] },
+  { brand: 'Netflix', names: ['netflix'], legit: ['netflix.com', 'netflix.net'] },
+  { brand: 'Twitter/X', names: ['twitter'], legit: ['twitter.com', 'x.com', 'twimg.com', 't.co'] },
+  { brand: 'Telegram', names: ['telegram'], legit: ['telegram.org', 't.me', 'telegram.me'] },
+  { brand: 'Sberbank', names: ['sberbank', 'sber'], legit: ['sberbank.ru', 'sber.ru', 'sberbank.com', 'sberbank-ast.ru'] },
+  { brand: 'Tinkoff/T-Bank', names: ['tinkoff', 'tbank'], legit: ['tinkoff.ru', 'tbank.ru', 'tinkoff.com'] },
+  { brand: 'VTB', names: ['vtb'], legit: ['vtb.ru', 'vtb.com'] },
+  { brand: 'Alfa-Bank', names: ['alfabank'], legit: ['alfabank.ru', 'alfa.me', 'alfabank.by', 'alfabank.kz'] },
+  { brand: 'WhatsApp', names: ['whatsapp'], legit: ['whatsapp.com', 'whatsapp.net', 'wa.me'] },
+  { brand: 'Binance', names: ['binance'], legit: ['binance.com', 'binance.us', 'binance.org'] },
+];
+
+function isLegitFor(brand, registrable) {
+  if (brand.legit.includes(registrable)) return true;
+  return (brand.cc || []).some((l) =>
+    new RegExp(`^${l}\\.(?:com|(?:com?|org|net)\\.[a-z]{2}|[a-z]{2})$`).test(registrable));
+}
+
+function labelMatchesBrand(label, brand) {
+  const flat = label.replace(/-/g, '');
+  const tokens = label.split('-');
+  const hasPhishToken = tokens.some((t) => PHISH_WORDS.includes(t));
+  for (const name of brand.names) {
+    const common = (brand.common || []).includes(name);
+    // (a) the label is the brand, possibly with lookalike characters (g00gle, paypa1)
+    if (squash(flat) === squash(name)) return true;
+    // (b) brand as a separate word: paypal-secure, secure-paypal-login
+    if (tokens.some((t) => squash(t) === squash(name)) && (!common || hasPhishToken)) return true;
+    // (c) brand glued to phishing words: appleidverify, paypallogin2024
+    for (const [l, b, words] of [[flat.replace(/\d+$/, ''), name, PHISH_WORDS], [skeleton(flat), skeleton(name), PHISH_WORDS_SKEL]]) {
+      if (l.startsWith(b) && isPhishWords(l.slice(b.length), words)) return true;
+      if (l.endsWith(b) && isPhishWords(l.slice(0, -b.length), words)) return true;
     }
-    if (e.target.id === 'tg-phish-dismiss' || e.target.closest('#tg-phish-dismiss')) {
-      overlay.remove();
+  }
+  return false;
+}
+
+/** Brand the hostname imitates, 'Homograph' for mixed-script labels, or null. */
+function detectPhishing(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  if (!host.includes('.') || /^[\d.]+$/.test(host)) return null;
+  const registrable = getRegistrableDomain(host);
+  const rawLabel = registrable.split('.')[0];
+  const uniLabel = decodeLabel(rawLabel);
+  const isIdn = uniLabel !== rawLabel;
+  const latinLabel = isIdn ? [...uniLabel].map((ch) => CONFUSABLES[ch] || ch).join('') : rawLabel;
+
+  for (const brand of BRANDS) {
+    if (isLegitFor(brand, registrable)) continue;
+    // only an all-Latin result can imitate a Latin brand
+    if (!NON_LATIN_LETTER.test(latinLabel) && labelMatchesBrand(latinLabel, brand)) {
+      return isIdn ? `${brand.brand} (IDN)` : brand.brand;
     }
-  }, { capture: true });
+    // (d) a brand domain embedded in the subdomain: paypal.com.account-verify.xyz
+    for (const d of brand.legit) {
+      if (('.' + host).includes('.' + d + '.')) return brand.brand;
+    }
+  }
+  if (isIdn && /[a-z]/.test(uniLabel) && NON_LATIN_LETTER.test(uniLabel)) return 'Homograph';
+  return null;
+}
+// --- end phishing detection ---
+
+function checkPhishing() {
+  const brand = detectPhishing(location.hostname);
+  if (!brand) return;
+  chrome.storage.local.get({ phishingAllowlist: [] }, ({ phishingAllowlist }) => {
+    if (Array.isArray(phishingAllowlist) && phishingAllowlist.includes(location.hostname)) return;
+    // background shows the warning page; nothing is drawn into the (hostile) page
+    chrome.runtime.sendMessage({
+      action: 'phishingDetected', brand, domain: location.hostname, url: location.href
+    }).catch(() => {});
+  });
 }
 
 // =============================================
 // SETTINGS & INIT
 // =============================================
-const DEFAULT_SETTINGS = {
-  autoDeleteExpired: true, blockExfil: true,
-  antiFingerprint: true, formSpy: true, antiMiner: true,
-  antiPhishing: true, blockTrackers: true,
-  hideCookieBanners: true, antiWebRTC: true,
-  antiKeylogger: true, antiTabNapping: true,
-  clipboardGuard: true,
-  jsThreatScan: true, darkPatternDetect: true, breachCheck: true,
-  blockJavascriptUrls: true, blockDataIframes: true
-};
+// DEFAULT_SETTINGS comes from defaults.js (same ISOLATED world).
 
-function sendSettingsToInjected(s) {
-  window.postMessage({
-    type: 'TG_SETTINGS',
-    blockExfil: s.blockExfil || false,
-    antiFingerprint: s.antiFingerprint || false,
-    formSpy: s.formSpy !== false,
-    antiMiner: s.antiMiner || false,
-    antiWebRTC: s.antiWebRTC || false,
-    antiKeylogger: s.antiKeylogger !== false,
-    antiTabNapping: s.antiTabNapping !== false,
-    clipboardGuard: s.clipboardGuard !== false,
-    blockJavascriptUrls: s.blockJavascriptUrls !== false,
-    blockDataIframes: s.blockDataIframes !== false
-  }, '*');
+// Runs fn(settings) unless the extension was reloaded; errors stay inside.
+function withSettings(fn) {
+  try {
+    if (!chrome.runtime?.id) return;
+    chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+      try { fn(settings); } catch {}
+    });
+  } catch {}
 }
 
-function autoScan() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
-    sendSettingsToInjected(settings);
-
-    // Антифишинг
-    if (settings.antiPhishing !== false) {
-      checkPhishing();
-    }
+function autoScan(firstRun) {
+  withSettings((settings) => {
+    if (firstRun && settings.antiPhishing !== false) checkPhishing();
 
     const results = scanStorage();
     if (settings.autoDeleteExpired) {
@@ -292,31 +358,26 @@ function autoScan() {
     }
     chrome.runtime.sendMessage({ action: 'autoScanResult', findings: results, url: location.href }).catch(() => {});
   });
-  } catch {}
 }
 
-autoScan();
+autoScan(true);
 setTimeout(autoScan, 2000);
 
 // =============================================
 // COOKIE BANNER AUTO-HIDE
 // =============================================
+// Exact roots of known consent managers. No attribute wildcards: they also
+// match page content such as a required #gdpr_consent checkbox.
 const COOKIE_SELECTORS = [
   '#cookie-banner', '#cookie-notice', '#cookie-consent', '#cookie-popup', '#cookie-bar',
   '#cookieBanner', '#cookieNotice', '#cookieConsent', '#CookieBanner',
   '.cookie-banner', '.cookie-notice', '.cookie-consent', '.cookie-popup', '.cookie-bar',
-  '.cookie-message', '.cookie-overlay', '.cookie-wrapper', '.cookie-alert',
+  '.cookie-message', '.cookie-overlay', '.cookie-alert',
   '.cookies-banner', '.cookies-notice', '.cookies-popup',
   '.cc-banner', '.cc-window', '.cc-overlay',
-  '[class*="cookie-banner"]', '[class*="cookie-consent"]', '[class*="cookie-notice"]',
-  '[class*="cookieBanner"]', '[class*="cookieConsent"]', '[class*="cookieNotice"]',
-  '[id*="cookie-banner"]', '[id*="cookie-consent"]', '[id*="cookie-notice"]',
-  '[id*="gdpr"]', '.gdpr-banner', '.gdpr-popup', '.gdpr-notice', '#gdpr-banner',
-  '[class*="gdpr-banner"]', '[class*="gdpr-consent"]',
-  '[class*="consent-banner"]', '[class*="consent-popup"]', '[class*="consent-notice"]',
+  '.gdpr-banner', '.gdpr-popup', '.gdpr-notice', '#gdpr-banner',
   '.consent-banner', '.consent-popup', '#consent-banner',
-  '[aria-label*="cookie" i]', '[aria-label*="consent" i]',
-  '.cmp-container', '#cmp-container', '.cmp-banner',
+  '.cmp-banner', '#cmp-container',
   '#onetrust-banner-sdk', '#onetrust-consent-sdk', '.onetrust-pc-dark-filter',
   '.osano-cm-window', '#osano-cm-window',
   '#usercentrics-root', '.uc-banner',
@@ -324,104 +385,56 @@ const COOKIE_SELECTORS = [
   '.fc-consent-root', '.fc-dialog-container',
   '#qc-cmp2-container', '.qc-cmp2-container',
   '.evidon-banner', '#_evidon_banner',
-  '.truste-banner', '#truste-consent-track',
-  '#sp_message_container_', '.message-container[class*="sp_"]',
+  '.truste-banner', '#truste-consent-track', '#trustarc-banner-overlay', '#truste-consent-content',
+  'iframe[id^="sp_message_iframe"]', 'div[id^="sp_message_container"]',
+  'iframe[title*="SP Consent" i]', 'iframe[title*="cookie" i]', 'iframe[title*="consent" i]',
   '[data-testid="cookie-banner"]', '#bbccookies-banner',
-  '[class*="cookie-banner-"]', '[id*="cookie-banner-"]',
 ];
+const COOKIE_CSS = COOKIE_SELECTORS.join(',\n') +
+  ' { display: none !important; visibility: hidden !important; pointer-events: none !important; }\n' +
+  // SourcePoint locks scrolling with its own class while its (now hidden) message is open
+  'html.sp_message_open, body.sp_message_open { overflow: auto !important; }';
 
 let cookieBannerStyleEl = null;
 let cookieBannersHidden = 0;
 
-// Text patterns for cookie banner detection (multi-language)
+// Consent wording, not just the word "cookie" (recipes have cookies too)
 const COOKIE_TEXT_PATTERNS = [
-  /cookie/i, /куки/i, /cookie-файл/i,
-  /we use cookies/i, /this site uses cookies/i, /uses cookies/i,
-  /использует cookie/i, /использует куки/i, /файлы cookie/i,
-  /politique de cookies/i, /nous utilisons des cookies/i,
+  /we use cookies/i, /(?:site|website|uses|use of|our) cookies/i, /cookies? (?:policy|settings|preferences|consent)/i,
+  /использу\S* (?:файлы )?(?:cookie|куки)/i, /файл\S* cookie/i, /cookie-файл/i,
+  /nous utilisons des cookies/i, /politique de cookies/i,
   /wir verwenden cookies/i, /cookies verwenden/i,
 ];
 const COOKIE_BUTTON_PATTERNS = [
-  /^accept/i, /^принять/i, /^agree/i, /^ok$/i, /^got it/i, /^i agree/i,
-  /^понятно/i, /^согласен/i, /^соглас/i, /^allow/i, /^разрешить/i,
-  /^accept all/i, /^принять все/i, /^j'accepte/i, /^akzeptieren/i,
-  /^yes/i, /^да[,.]?\s/i, /^allow all/i, /^разрешить все/i,
-  /^continue/i, /^продолжить/i, /^ich stimme zu/i,
+  /^accept/i, /^agree/i, /^i agree/i, /^got it/i, /^allow (?:all|cookies)/i,
+  /^принять/i, /^понятно/i, /^соглас/i, /^разрешить (?:все|cookie)/i,
+  /^j'accepte/i, /^tout accepter/i, /^akzeptieren/i, /^alle akzeptieren/i, /^ich stimme zu/i,
 ];
+// Login and sign-up dialogs are never consent banners
+const NOT_A_BANNER = /\b(?:sign in|log in|sign up|continue with)\b|войти|вход|регистрац/i;
 
-function hideCookieBanners() {
-  try {
-  if (!chrome.runtime?.id) { cookieObserver.disconnect(); return; }
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
-    if (!settings.hideCookieBanners) return;
+function isHtmlDocument() {
+  return !!document.body && document.documentElement instanceof HTMLElement;
+}
 
-    // Inject CSS to hide known selectors
+function hideCookieBanners(roots) {
+  withSettings((settings) => {
+    if (!settings.hideCookieBanners || !isHtmlDocument()) return;
+
     if (!cookieBannerStyleEl) {
       cookieBannerStyleEl = document.createElement('style');
       cookieBannerStyleEl.id = 'tg-cookie-hide';
+      cookieBannerStyleEl.textContent = COOKIE_CSS;
       document.documentElement.appendChild(cookieBannerStyleEl);
     }
-    cookieBannerStyleEl.textContent = COOKIE_SELECTORS.map(
-      s => `${s} { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }`
-    ).join('\n');
 
-    // Also hide overlay/backdrop that blocks the page
-    // Including iframe-based consent managers (SourcePoint, OneTrust, TrustArc, etc.)
-    const overlayCSS = `
-      body.cookie-overlay, body.no-scroll, body.modal-open { overflow: auto !important; }
-      .cookie-overlay-bg, .cc-overlay, .cmp-overlay, .consent-overlay,
-      [class*="cookie-overlay"], [class*="consent-overlay"],
-      .onetrust-pc-dark-filter { display: none !important; }
-      iframe[id^="sp_message_iframe"] { display: none !important; }
-      div[id^="sp_message_container"] { display: none !important; }
-      .sp_message_open { overflow: auto !important; }
-      div.fc-consent-root iframe { display: none !important; }
-      #trustarc-banner-overlay, #truste-consent-content { display: none !important; }
-      iframe[id*="consent"], iframe[title*="cookie" i], iframe[title*="consent" i],
-      iframe[title*="Privacy" i], iframe[title*="SP Consent" i] { display: none !important; }
-    `;
-    cookieBannerStyleEl.textContent += overlayCSS;
-
-    // Hide iframe-based consent managers via JS (SourcePoint, etc.)
-    const iframeSelectors = [
-      'iframe[id^="sp_message_iframe"]',
-      'div[id^="sp_message_container"]',
-      'iframe[title*="SP Consent" i]',
-      'iframe[title*="cookie" i]',
-      'iframe[title*="consent" i]',
-      'iframe[title*="Privacy Manager" i]',
-    ];
-    for (const sel of iframeSelectors) {
-      try {
-        for (const el of document.querySelectorAll(sel)) {
-          el.style.setProperty('display', 'none', 'important');
-          // Also hide parent container if it's a wrapper div
-          const parent = el.parentElement;
-          if (parent && parent.children.length <= 2 && parent.id && /sp_message|consent|cookie/i.test(parent.id)) {
-            parent.style.setProperty('display', 'none', 'important');
-          }
-        }
-      } catch {}
-    }
-    // Restore body scroll if locked by consent manager
-    if (document.body.classList.contains('sp_message_open')) {
-      document.body.classList.remove('sp_message_open');
-      document.body.style.overflow = '';
-    }
-
-    // Count CSS-hidden elements
     let count = 0;
-    for (const sel of COOKIE_SELECTORS) {
-      try {
-        const els = document.querySelectorAll(sel);
-        for (const el of els) {
-          if (el.offsetHeight > 0 || el.style.display !== 'none') count++;
-        }
-      } catch {}
+    if (!roots) {
+      for (const sel of COOKIE_SELECTORS) {
+        try { count += document.querySelectorAll(sel).length; } catch {}
+      }
     }
-
-    // Smart text-based detection for custom cookie banners
-    count += detectAndHideCookieBannersByText();
+    count += detectAndHideCookieBannersByText(roots || [document.body]);
 
     if (count > 0 && cookieBannersHidden === 0) {
       cookieBannersHidden = count;
@@ -431,65 +444,55 @@ function hideCookieBanners() {
       }).catch(() => {});
     }
   });
-  } catch { cookieObserver.disconnect(); }
 }
 
-function detectAndHideCookieBannersByText() {
+function isCookieBanner(el) {
+  if (el.dataset.tgCookieHidden || el.id === 'tg-cookie-hide') return false;
+  // cheap layout checks first: on big pages almost everything fails here
+  if (el.offsetHeight === 0 || el.offsetHeight > 400 || el.offsetWidth < 200) return false;
+  // banners float over the page: fixed/sticky and stuck to a viewport edge (or a dialog)
+  const pos = getComputedStyle(el).position;
+  if (pos !== 'fixed' && pos !== 'sticky') return false;
+  const rect = el.getBoundingClientRect();
+  const atEdge = rect.top <= 24 || rect.bottom >= window.innerHeight - 24;
+  const isDialog = el.tagName === 'DIALOG' || /^(?:dialog|alertdialog)$/.test(el.getAttribute('role') || '');
+  if (!atEdge && !isDialog) return false;
+
+  const text = el.textContent || '';
+  if (text.length < 20 || text.length > 2000) return false;
+  if (!COOKIE_TEXT_PATTERNS.some((p) => p.test(text)) || NOT_A_BANNER.test(text)) return false;
+  // never touch forms or anything the user can type into
+  if (el.closest('form') || el.querySelector('form, input:not([type="button"]):not([type="submit"]), textarea, select')) return false;
+
+  const buttons = el.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]');
+  return [...buttons].some((b) => {
+    const label = (b.innerText || b.value || '').trim();
+    return COOKIE_BUTTON_PATTERNS.some((p) => p.test(label));
+  });
+}
+
+function detectAndHideCookieBannersByText(roots) {
+  const SELECTOR = 'div, section, aside, footer, dialog, [role="dialog"], [role="banner"], [role="alertdialog"]';
   let hidden = 0;
-  try {
-    // Look for fixed/sticky positioned elements at top or bottom of page
-    const candidates = document.querySelectorAll('div, section, aside, footer, [role="dialog"], [role="banner"], [role="alertdialog"]');
-    for (const el of candidates) {
-      try {
-        // Skip already hidden or tiny elements
-        if (el.id === 'tg-cookie-hide' || el.id === 'tg-phishing-overlay') continue;
-        if (el.dataset.tgCookieHidden) continue;
-        if (el.offsetHeight === 0 || el.offsetHeight > 400) continue; // banners are typically < 400px tall
-        if (el.offsetWidth < 200) continue;
-
-        const style = getComputedStyle(el);
-        const pos = style.position;
-        // Cookie banners are usually fixed or sticky, sometimes absolute
-        const isPositioned = pos === 'fixed' || pos === 'sticky' ||
-          (pos === 'absolute' && (parseInt(style.bottom) <= 20 || parseInt(style.top) <= 20));
-        // Also check if element is near the very bottom or top of viewport
-        const rect = el.getBoundingClientRect();
-        const isEdge = rect.bottom > window.innerHeight - 150 || rect.top < 150;
-
-        if (!isPositioned && !isEdge) continue;
-
-        // Check if text content mentions cookies
-        const text = el.innerText || '';
-        if (text.length < 20 || text.length > 2000) continue; // too short or too long
-        const hasCookieText = COOKIE_TEXT_PATTERNS.some(p => p.test(text));
-        if (!hasCookieText) continue;
-
-        // Check if it has a button that looks like "Accept" / "Принять"
-        const buttons = el.querySelectorAll('button, a[role="button"], input[type="button"], input[type="submit"], [class*="btn"], [class*="button"]');
-        let hasAcceptButton = false;
-        for (const btn of buttons) {
-          const btnText = (btn.innerText || btn.value || '').trim();
-          if (COOKIE_BUTTON_PATTERNS.some(p => p.test(btnText))) {
-            hasAcceptButton = true;
-            break;
-          }
-        }
-
-        // If it has cookie text + accept button → it's a cookie banner, hide it
-        if (hasAcceptButton) {
+  for (const root of roots) {
+    try {
+      const candidates = root.matches?.(SELECTOR) ? [root, ...root.querySelectorAll(SELECTOR)] : root.querySelectorAll(SELECTOR);
+      for (const el of candidates) {
+        try {
+          if (!isCookieBanner(el)) continue;
           el.style.setProperty('display', 'none', 'important');
-          el.style.setProperty('visibility', 'hidden', 'important');
-          el.style.setProperty('opacity', '0', 'important');
           el.dataset.tgCookieHidden = '1';
           hidden++;
-          // Also restore body scroll if banner was blocking it
-          if (document.body.style.overflow === 'hidden') {
-            document.body.style.overflow = '';
-          }
-        }
-      } catch (_) { /* ignore per-element errors from page CSP/CORS */ }
+        } catch { /* ignore per-element errors */ }
+      }
+    } catch { /* ignore DOM access errors */ }
+  }
+  // the banner we hid may have locked scrolling with inline styles
+  if (hidden > 0) {
+    for (const el of [document.documentElement, document.body]) {
+      if (el && el.style.overflow === 'hidden') el.style.overflow = '';
     }
-  } catch (_) { /* ignore DOM access errors */ }
+  }
   return hidden;
 }
 
@@ -498,18 +501,31 @@ setTimeout(hideCookieBanners, 500);
 setTimeout(hideCookieBanners, 2000);
 setTimeout(hideCookieBanners, 5000);
 
-// Watch for dynamically added cookie banners (debounced, auto-disconnect after 30s)
+// Watch added nodes only (debounced, auto-disconnect after 30s); our own
+// <style> is ignored so hiding banners can't retrigger the observer.
 let _cookieDebounce = null;
 let _cookieMutationCount = 0;
-const cookieObserver = new MutationObserver(() => {
+let _cookiePendingRoots = new Set();
+const cookieObserver = new MutationObserver((mutations) => {
   try { if (!chrome.runtime?.id) { cookieObserver.disconnect(); return; } } catch { cookieObserver.disconnect(); return; }
-  _cookieMutationCount++;
-  // Auto-disconnect after 200 mutations — banner would be found by then
-  if (_cookieMutationCount > 200) { cookieObserver.disconnect(); return; }
+  for (const m of mutations) {
+    for (const node of m.addedNodes) {
+      if (node.nodeType === 1 && node !== cookieBannerStyleEl) _cookiePendingRoots.add(node);
+    }
+  }
+  if (_cookiePendingRoots.size === 0) return;
+  // Auto-disconnect after 200 batches — banner would be found by then
+  if (++_cookieMutationCount > 200) { cookieObserver.disconnect(); return; }
   if (_cookieDebounce) clearTimeout(_cookieDebounce);
-  _cookieDebounce = setTimeout(hideCookieBanners, 500);
+  _cookieDebounce = setTimeout(() => {
+    const roots = [..._cookiePendingRoots].filter((n) => n.isConnected);
+    _cookiePendingRoots = new Set();
+    if (roots.length) hideCookieBanners(roots);
+  }, 500);
 });
-cookieObserver.observe(document.documentElement, { childList: true, subtree: true });
+if (document.documentElement) {
+  cookieObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
 // Also disconnect after 30 seconds regardless — page is loaded by then
 setTimeout(() => cookieObserver.disconnect(), 30000);
 
@@ -517,14 +533,12 @@ setTimeout(() => cookieObserver.disconnect(), 30000);
 // JS THREAT SCANNER — analyse external scripts
 // =============================================
 function jsThreatScan() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+  withSettings((settings) => {
     if (!settings.jsThreatScan) return;
 
     const scripts = document.querySelectorAll('script[src]');
     const threats = [];
-    const currentBase = getBaseDomain(location.hostname);
+    const currentBase = getRegistrableDomain(location.hostname);
 
     for (const s of scripts) {
       const src = s.getAttribute('src');
@@ -532,7 +546,7 @@ function jsThreatScan() {
       let url;
       try { url = new URL(src, location.href); } catch { continue; }
 
-      const isExternal = getBaseDomain(url.hostname) !== currentBase;
+      const isExternal = getRegistrableDomain(url.hostname) !== currentBase;
       if (!isExternal) continue;
 
       // Check SRI (Subresource Integrity)
@@ -587,7 +601,6 @@ function jsThreatScan() {
       }).catch(() => {});
     }
   });
-  } catch {}
 }
 setTimeout(jsThreatScan, 3000);
 
@@ -595,9 +608,7 @@ setTimeout(jsThreatScan, 3000);
 // DARK PATTERN DETECTOR — sneaky UI tricks
 // =============================================
 function detectDarkPatterns() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+  withSettings((settings) => {
     if (!settings.darkPatternDetect) return;
 
     const patterns = [];
@@ -667,7 +678,6 @@ function detectDarkPatterns() {
       }).catch(() => {});
     }
   });
-  } catch {}
 }
 setTimeout(detectDarkPatterns, 4000);
 
@@ -676,10 +686,8 @@ setTimeout(detectDarkPatterns, 4000);
 // =============================================
 let _breachCheckDone = false;
 function breachCheck() {
-  try {
   if (_breachCheckDone) return;
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+  withSettings((settings) => {
     if (!settings.breachCheck) return;
     _breachCheckDone = true;
 
@@ -711,7 +719,6 @@ function breachCheck() {
       passwords: passwords.slice(0, 3).map(p => ({ key: p.key, value: p.value, storage: p.storage }))
     }).catch(() => {});
   });
-  } catch {}
 }
 setTimeout(breachCheck, 5000);
 
@@ -719,9 +726,7 @@ setTimeout(breachCheck, 5000);
 // TAB-NAPPING PROTECTION (link hardening)
 // =============================================
 function hardenLinks() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+  withSettings((settings) => {
     if (!settings.antiTabNapping) return;
     const links = document.querySelectorAll('a[target="_blank"]:not([rel*="noopener"])');
     for (const a of links) {
@@ -729,25 +734,23 @@ function hardenLinks() {
       a.setAttribute('rel', rel ? rel + ' noopener noreferrer' : 'noopener noreferrer');
     }
   });
-  } catch {}
 }
 setTimeout(hardenLinks, 1000);
 setTimeout(hardenLinks, 3000);
 
 // =============================================
-// BLOCK javascript: LINKS (DOM cleanup)
+// javascript: LINKS (report only)
 // =============================================
-function neutralizeJavascriptLinks() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+// Links stay untouched: rewriting them broke ASP.NET __doPostBack and hash
+// routers. When the setting is on, injected.js cancels the navigation on click.
+const TRIVIAL_JS_URL = /^\s*javascript:\s*(?:void\s*\(\s*0\s*\)|void\s+0)?\s*;?\s*$/i;
+
+function reportJavascriptLinks() {
+  withSettings((settings) => {
     if (!settings.blockJavascriptUrls) return;
-    const jsLinks = document.querySelectorAll('a[href^="javascript:" i]');
     let count = 0;
-    for (const a of jsLinks) {
-      a.setAttribute('data-tg-blocked-href', a.getAttribute('href'));
-      a.setAttribute('href', '#');
-      count++;
+    for (const a of document.querySelectorAll('a[href^="javascript:" i]')) {
+      if (!TRIVIAL_JS_URL.test(a.getAttribute('href'))) count++;
     }
     if (count > 0) {
       chrome.runtime.sendMessage({
@@ -756,26 +759,28 @@ function neutralizeJavascriptLinks() {
       }).catch(() => {});
     }
   });
-  } catch {}
 }
-setTimeout(neutralizeJavascriptLinks, 1500);
-setTimeout(neutralizeJavascriptLinks, 4000);
+setTimeout(reportJavascriptLinks, 1500);
 
 // =============================================
-// BLOCK data:/blob: IFRAMES (DOM cleanup)
+// BLOCK data: IFRAMES (DOM cleanup)
 // =============================================
-function blockDataBlobIframes() {
-  try {
-  if (!chrome.runtime?.id) return;
-  chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
+// data: documents that can run script or render a fake page. blob: URLs are
+// same-origin by construction (PDF previews etc.), so they stay; injected.js
+// applies the same rule.
+function isRiskyDataUrl(src) {
+  const m = /^\s*data:([^,;]*)/i.exec(src || '');
+  if (!m) return false;
+  const mime = m[1].trim().toLowerCase();
+  return mime === '' || mime === 'text/html' || mime === 'application/xhtml+xml' || mime === 'image/svg+xml';
+}
+
+function blockDataIframes() {
+  withSettings((settings) => {
     if (!settings.blockDataIframes) return;
-    const iframes = document.querySelectorAll('iframe[src]');
     let blocked = 0;
-    for (const iframe of iframes) {
-      const src = (iframe.getAttribute('src') || '').trim().toLowerCase();
-      if ((src.startsWith('data:') || src.startsWith('blob:'))
-          && !src.startsWith('data:image/')
-          && !src.startsWith('data:application/pdf')) {
+    for (const iframe of document.querySelectorAll('iframe[src]')) {
+      if (isRiskyDataUrl(iframe.getAttribute('src'))) {
         iframe.removeAttribute('src');
         iframe.style.display = 'none';
         blocked++;
@@ -788,33 +793,11 @@ function blockDataBlobIframes() {
       }).catch(() => {});
     }
   });
-  } catch {}
 }
-setTimeout(blockDataBlobIframes, 1000);
-setTimeout(blockDataBlobIframes, 3000);
+setTimeout(blockDataIframes, 1000);
+setTimeout(blockDataIframes, 3000);
 
-// Мост: postMessage от injected.js
-window.addEventListener('message', (event) => {
-  if (event.source !== window || !event.data || !event.data.type) return;
-  try { if (!chrome.runtime?.id) return; } catch { return; }
-  const type = event.data.type;
-  const MSG_MAP = {
-    'TG_EXFIL_ALERT': 'exfilAlert',
-    'TG_FINGERPRINT': 'fingerprintDetected',
-    'TG_FORM_BLOCK': 'formBlocked',
-    'TG_MINER_BLOCK': 'minerBlocked',
-    'TG_WEBRTC_BLOCK': 'webrtcBlocked',
-    'TG_KEYLOGGER_DETECT': 'keyloggerDetected',
-    'TG_CLIPBOARD_SWAP': 'clipboardSwapBlocked',
-    'TG_TABNAP_BLOCK': 'tabNappingBlocked',
-    'TG_JS_URL_BLOCK': 'jsUrlBlocked',
-    'TG_DATA_IFRAME_BLOCK': 'dataIframeBlocked',
-  };
-  const action = MSG_MAP[type];
-  if (action) {
-    chrome.runtime.sendMessage({ action, detail: event.data }).catch(() => {});
-  }
-});
+// Events from injected.js are forwarded by settings-preload.js over a private channel.
 
 // =============================================
 // AUDIT — passive XSS & SQLi detection
@@ -1130,8 +1113,8 @@ function auditPage() {
       // Check if value is an external URL
       try {
         const target = new URL(value, location.href);
-        const currentBase = location.hostname.split('.').slice(-2).join('.');
-        const targetBase = target.hostname.split('.').slice(-2).join('.');
+        const currentBase = getRegistrableDomain(location.hostname);
+        const targetBase = getRegistrableDomain(target.hostname);
         if (target.hostname && targetBase !== currentBase) {
           findings.push({
             type: 'redirect', subtype: 'open_redirect', severity: 'warning',
@@ -1222,12 +1205,9 @@ function auditPage() {
       const inputs = [];
       for (const input of form.querySelectorAll('input[name], textarea[name], select[name]')) {
         const type = (input.getAttribute('type') || 'text').toLowerCase();
-        if (type === 'submit' || type === 'button' || type === 'hidden' || type === 'file' || type === 'image') continue;
-        inputs.push({
-          name: input.getAttribute('name'),
-          type: type,
-          value: input.value || ''
-        });
+        // Never collect passwords; values stay on the page (the audit sends placeholders)
+        if (['submit', 'button', 'hidden', 'file', 'image', 'password'].includes(type)) continue;
+        inputs.push({ name: input.getAttribute('name'), type });
       }
       if (inputs.length > 0) {
         // Resolve absolute action URL
@@ -1241,17 +1221,41 @@ function auditPage() {
   return { findings, urlParams, pageForms, url: location.href };
 }
 
-// Слушаем запросы
+// Expire a cookie on every path/domain combination it could have been set
+// with; document.cookie can't tell us which one it was.
+function deleteCookie(name) {
+  const segments = location.pathname.split('/').filter(Boolean);
+  const paths = new Set(['/']);
+  for (let i = 1; i <= segments.length; i++) {
+    const p = '/' + segments.slice(0, i).join('/');
+    paths.add(p);
+    paths.add(p + '/');
+  }
+  const domains = [''];
+  const registrable = getRegistrableDomain(location.hostname);
+  for (let host = location.hostname; host; host = host.slice(host.indexOf('.') + 1)) {
+    domains.push('; domain=' + host);
+    if (host === registrable || !host.includes('.')) break;
+  }
+  const secure = location.protocol === 'https:' ? '; secure' : '';
+  for (const path of paths) {
+    for (const domain of domains) {
+      document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; max-age=0; path=${path}${domain}${secure}`;
+    }
+  }
+  return !document.cookie.split(';').some((c) => c.split('=')[0].trim() === name);
+}
+
+// Слушаем запросы (all answers are synchronous)
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'scan') {
     sendResponse({ findings: scanStorage(), url: location.href });
   } else if (request.action === 'removeItem') {
     try {
       if (request.storage === 'cookie') {
-        // Delete cookie by setting expiry in the past
-        document.cookie = request.key + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
-        document.cookie = request.key + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=' + location.hostname;
-        sendResponse({ success: true });
+        sendResponse(deleteCookie(request.key)
+          ? { success: true }
+          : { success: false, error: 'httpOnly or inaccessible' });
       } else {
         const store = request.storage === 'sessionStorage' ? sessionStorage : localStorage;
         store.removeItem(request.key);
@@ -1259,30 +1263,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
     } catch (e) { sendResponse({ success: false, error: e.message }); }
   } else if (request.action === 'detectTLS') {
-    // Try to extract TLS info from Performance API
-    try {
-      const entries = performance.getEntriesByType('resource');
-      const navEntry = performance.getEntriesByType('navigation')[0];
-      let info = { keyExchange: null, cipher: null, protocol: null };
-
-      // Check if browser exposes nextHopProtocol
-      if (navEntry && navEntry.nextHopProtocol) {
-        info.protocol = navEntry.nextHopProtocol; // "h2", "h3", "http/1.1"
-        // h3 = HTTP/3 over QUIC — always uses TLS 1.3
-        if (navEntry.nextHopProtocol === 'h3') {
-          info.protocol = 'HTTP/3 (QUIC + TLS 1.3)';
-        } else if (navEntry.nextHopProtocol === 'h2') {
-          info.protocol = 'HTTP/2 (TLS 1.2+)';
-        }
-      }
-      sendResponse(info);
-    } catch { sendResponse(null); }
-    return true;
+    // Pages can't see TLS parameters; only the negotiated HTTP protocol is known
+    let protocol = null;
+    try { protocol = performance.getEntriesByType('navigation')[0]?.nextHopProtocol || null; } catch {}
+    sendResponse({ protocol });
   } else if (request.action === 'auditPage') {
     sendResponse(auditPage());
   } else if (request.action === 'settingsUpdated') {
-    sendSettingsToInjected(request.settings);
+    // injected.js picks changes up via chrome.storage.onChanged in settings-preload.js
     sendResponse({ ok: true });
   }
-  return true;
 });

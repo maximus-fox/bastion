@@ -1,14 +1,19 @@
 /**
- * TokenGuard v2.0 — Background Service Worker
+ * Bastion — Background Service Worker
  * Badge, Security Headers, notifications, history, tracker counter, shield events
  */
+
+importScripts('defaults.js'); // DEFAULT_SETTINGS
 
 const SECURITY_HEADERS = [
   'strict-transport-security', 'content-security-policy', 'x-frame-options',
   'x-content-type-options', 'x-xss-protection', 'referrer-policy'
 ];
 
-// Known tracker domains (compact list)
+// Known tracker domains: pure tracking/ads endpoints, blocked when loaded by another site
+// (domainType: thirdParty). Keep out SSO, captchas, anti-bot/anti-fraud checks,
+// CDNs, consent managers, support chat and content embeds: blocking those
+// breaks logins, checkouts and pages.
 const TRACKER_DOMAINS = [
   // =====================================================
   //  GOOGLE / ALPHABET (Global)
@@ -27,8 +32,8 @@ const TRACKER_DOMAINS = [
   //  META / FACEBOOK / INSTAGRAM (Global)
   // =====================================================
   'connect.facebook.net', 'pixel.facebook.com', 'tr.facebook.com',
-  'an.facebook.com', 'ads.facebook.com', 'graph.facebook.com',
-  'analytics.instagram.com', 'i.instagram.com',
+  'an.facebook.com', 'ads.facebook.com',
+  'analytics.instagram.com',
   'pixel.instagram.com', 'business.facebook.com',
   'www.facebook.com/tr', 'ad.atdmt.com',
 
@@ -36,7 +41,6 @@ const TRACKER_DOMAINS = [
   //  TWITTER / X (Global)
   // =====================================================
   'analytics.twitter.com', 'ads-twitter.com', 'ads-api.twitter.com',
-  'syndication.twitter.com', 'platform.twitter.com',
   'static.ads-twitter.com', 't.co',
 
   // =====================================================
@@ -44,7 +48,7 @@ const TRACKER_DOMAINS = [
   // =====================================================
   'clarity.ms', 'bat.bing.com', 'bat.r.msn.com',
   'ads.linkedin.com', 'snap.licdn.com', 'px.ads.linkedin.com',
-  'platform.linkedin.com', 'analytics.pointdrive.linkedin.com',
+  'analytics.pointdrive.linkedin.com',
   'dc.ads.linkedin.com', 'tr.lfeeder.com',
 
   // =====================================================
@@ -110,15 +114,15 @@ const TRACKER_DOMAINS = [
   'hm.baidu.com', 'pos.baidu.com', 'cpro.baidu.com', 'eclick.baidu.com',
   'nsclick.baidu.com', 'baidustatic.com', 'hmcdn.baidu.com',
   // Alibaba
-  'log.mmstat.com', 'g.alicdn.com', 'acm.aliyun.com',
+  'log.mmstat.com',
   'gm.mmstat.com', 'arms-retcode.aliyuncs.com',
   // Tencent / QQ / WeChat
   'beacon.qq.com', 'pingtas.qq.com', 'report.qq.com', 'btrace.qq.com',
   'trace.qq.com', 'pgdt.gtimg.cn', 'adservice.qq.com',
-  'wx.gtimg.com', 'mp.weixin.qq.com/mp/report',
+  'mp.weixin.qq.com/mp/report',
   // Sina / Weibo
   'sax.sina.com.cn', 'beacon.sina.com.cn',
-  'trends.weibodata.com', 'img.t.sinajs.cn',
+  'trends.weibodata.com',
   // CNZZ / Umeng
   'cnzz.com', 'c.cnzz.com', 's4.cnzz.com', 's96.cnzz.com',
   'web.umeng.co', 'log.umsns.com', 'oc.umeng.com',
@@ -141,10 +145,10 @@ const TRACKER_DOMAINS = [
   // =====================================================
   //  JAPAN — LINE, Yahoo JP, Rakuten
   // =====================================================
-  'tr.line.me', 'scdn.line-apps.com', 'obs.line-scdn.net',
-  'yads.yahoo.co.jp', 'yjtag.yahoo.co.jp', 's.yimg.jp',
+  'tr.line.me', 'scdn.line-apps.com',
+  'yads.yahoo.co.jp', 'yjtag.yahoo.co.jp',
   'b90.yahoo.co.jp', 'retarget.yahoo.co.jp',
-  'rat.rakuten.co.jp', 'r.r10s.jp', 'grp01.id.rakuten.co.jp',
+  'rat.rakuten.co.jp',
   'pixel.dmm.co.jp', 'ct.nikkei.com',
 
   // =====================================================
@@ -159,7 +163,7 @@ const TRACKER_DOMAINS = [
   // =====================================================
   //  BRAZIL — MercadoLibre, Nubank, PagSeguro
   // =====================================================
-  'analytics.mercadolibre.com', 'http2.mlstatic.com',
+  'analytics.mercadolibre.com',
   'analytics.nubank.com.br', 'pixel.pagseguro.com',
   'analytics.b2w.io', 'analytics.americanas.com',
 
@@ -167,7 +171,7 @@ const TRACKER_DOMAINS = [
   //  EUROPE — Zalando, Criteo, Trade Desk
   // =====================================================
   'uk-ads.openx.net', 'pixel.rubiconproject.com', 'ib.adnxs.com',
-  'tag.getdrip.com', 'cdn.cookielaw.org',
+  'tag.getdrip.com',
   'sslwidget.criteo.com', 'dis.eu.criteo.com',
   'pixel.onbuy.com', 'analytics.zalando.com',
   'tracker.klarna.com', 'pixel.klarna.com',
@@ -215,11 +219,7 @@ const TRACKER_DOMAINS = [
   'matomo.cloud', 'piwik.pro', 'getclicky.com',
   'luckyorange.com', 'inspectlet.com', 'logrocket.io',
   'smartlook.com', 'rec.smartlook.com',
-  'cdn.userback.io', 'widget.intercom.io',
-  'js.driftt.com', 'widget.drift.com',
-  'static.zdassets.com', 'ekr.zdassets.com',
-  'cdn.livechatinc.com', 'api.livechatinc.com',
-  'snap.licdn.com', 'sentry.io', 'browser.sentry-cdn.com',
+  'sentry.io',
   'js.hs-analytics.net', 'js.hs-banner.com', 'track.hubspot.com',
   'cdn.branch.io', 'app.link', 'adjust.com', 'app.adjust.com',
   'app.appsflyer.com', 'launches.appsflyer.com',
@@ -244,16 +244,8 @@ const TRACKER_DOMAINS = [
   // =====================================================
   'fpjs.io', 'api.fpjs.io', 'cdn.fingerprint.com',
   'fingerprint.com', 'fpcdn.io', 'fpnpmcdn.net',
-  'arkoselabs.com', 'funcaptcha.com', 'client-api.arkoselabs.com',
-  'datadome.co', 'ct.captcha-delivery.com', 'api-js.datadome.co',
-  'perimeterx.net', 'px-cdn.net', 'px-cloud.net', 'px-client.net',
-  'b.cdnwidget.com', 'cdn.distil.it', 'n.cdn.distil.it',
-  'device.maxmind.com', 'geoip.maxmind.com',
+  'b.cdnwidget.com',
   'risk.clearbit.com', 'reveal.clearbit.com',
-  'api.fraudlogix.com', 'riskified.com', 'beacon.riskified.com',
-  'forter.com', 'verifi.forter.com',
-  'castle.io', 'api.castle.io',
-  'shield.sift.com', 'cdn.sift.com',
 
   // =====================================================
   //  CRYPTO & WEB3 TRACKERS
@@ -286,7 +278,6 @@ const TRACKER_DOMAINS = [
   'analytics.goldmansachs.com', 'analytics.morganstanley.com',
   'pixel.americanexpress.com', 'analytics.discover.com',
   // EU Banks
-  'analytics.revolut.com', 'analytics.n26.com',
   'analytics.wise.com', 'pixel.monzo.com',
   'analytics.hsbc.com', 'pixel.barclays.co.uk',
   'analytics.ing.com', 'analytics.deutschebank.com',
@@ -294,11 +285,10 @@ const TRACKER_DOMAINS = [
   'analytics.santander.com', 'analytics.bbva.com',
   'analytics.ubs.com', 'analytics.credit-suisse.com',
   // RU Banks
-  'smetrics.sberbank.ru', 'analytics.tinkoff.ru',
-  'tracking.vtb.ru', 'analytics.alfabank.ru',
-  'click.alfabank.ru', 'pixel.gazprombank.ru',
+  'analytics.alfabank.ru',
+  'pixel.gazprombank.ru',
   'analytics.raiffeisen.ru', 'pixel.open.ru',
-  'mc.bankiros.ru', 'analytics.banki.ru',
+  'analytics.banki.ru',
   // India Banks
   'analytics.icicibank.com', 'pixel.hdfcbank.com',
   'analytics.axisbank.com', 'analytics.kotak.com',
@@ -308,9 +298,9 @@ const TRACKER_DOMAINS = [
   'pixel.square.com', 'analytics.squareup.com',
   'pixel.adyen.com', 'analytics.checkout.com',
   'analytics.braintreepayments.com', 'pixel.2checkout.com',
-  'analytics.worldpay.com', 'pixel.klarna.com',
-  'tracker.klarna.com', 'analytics.afterpay.com',
-  'pixel.affirm.com', 'analytics.wise.com',
+  'analytics.worldpay.com',
+  'analytics.afterpay.com',
+  'pixel.affirm.com',
 
   // =====================================================
   //  GOVERNMENT / STATE TRACKERS
@@ -338,8 +328,8 @@ const TRACKER_DOMAINS = [
   //  E-COMMERCE TRACKERS
   // =====================================================
   'pixel.shopify.com', 'analytics.shopify.com', 'monorail-edge.shopifysvc.com',
-  'bat.bing.com', 'ct.shopify.com',
-  'analytics.ebay.com', 'rover.ebay.com', 'vi.vipr.ebaydesc.com',
+  'ct.shopify.com',
+  'analytics.ebay.com', 'rover.ebay.com',
   'analytics.etsy.com', 'pixel.etsy.com',
   'pixel.aliexpress.com', 'analytics.aliexpress.com',
   'pixel.wish.com', 'analytics.shein.com',
@@ -395,10 +385,8 @@ const TRACKER_DOMAINS = [
   // =====================================================
   //  SOCIAL WIDGETS (data leaks)
   // =====================================================
-  'apis.google.com', 'w.soundcloud.com',
-  'badge.stumbleupon.com', 'static.addtoany.com',
-  'connect.ok.ru', 'share.yandex.ru',
-  'telegram.org/js/telegram-widget.js',
+  'badge.stumbleupon.com',
+  'share.yandex.ru',
 
   // =====================================================
   //  CDN-HOSTED TRACKERS & TAG MANAGERS
@@ -407,11 +395,9 @@ const TRACKER_DOMAINS = [
   'cdn.pushwoosh.com', 'cp.pushwoosh.com',
   'sdk.pushwoosh.com', 'cdn.subscribers.com',
   'push.zalo.me', 'notix.io',
-  'js.hs-scripts.com', 'forms.hsforms.com',
-  'js.hubspot.com', 'api.hubapi.com',
-  'pixel.convertkit.com', 'app.convertkit.com',
-  'fast.wistia.com', 'embedwistia-a.akamaihd.net',
-  'ct.captcha-delivery.com', 'challenges.cloudflare.com',
+  'js.hs-scripts.com',
+  'js.hubspot.com',
+  'pixel.convertkit.com',
   'static.cloudflareinsights.com', 'cloudflareinsights.com',
 
   // =====================================================
@@ -430,16 +416,6 @@ const TRACKER_DOMAINS = [
   'links.m.cronycle.com', 'mandrillapp.com',
 ];
 
-const DEFAULT_SETTINGS = {
-  autoDeleteExpired: true, blockExfil: true,
-  antiFingerprint: true, formSpy: true, antiMiner: true,
-  antiPhishing: true, blockTrackers: true,
-  hideCookieBanners: true, antiWebRTC: true,
-  antiKeylogger: true, antiTabNapping: true,
-  clipboardGuard: true,
-  jsThreatScan: true, darkPatternDetect: true, breachCheck: true,
-  blockJavascriptUrls: true, blockDataIframes: true
-};
 
 function calcGrade(count) {
   if (count >= 6) return 'A';
@@ -458,6 +434,125 @@ function getBaseDomain(hostname) {
   return parts.slice(-2).join('.');
 }
 
+// Messages from the popup and other extension pages (content scripts run
+// inside sites and must not reach these actions).
+function isExtensionPage(sender) {
+  return sender.id === chrome.runtime.id && String(sender.url).startsWith(chrome.runtime.getURL(''));
+}
+
+// --- storage.session updates ---
+// Read-modify-write of one key is serialized: concurrent get/set pairs used to
+// overwrite each other (a burst of 30 events kept only 1).
+const _sessionQueues = {};
+function updateSession(key, fn) {
+  const run = async () => {
+    const data = await chrome.storage.session.get(key);
+    const next = fn(data[key]);
+    if (next !== undefined) await chrome.storage.session.set({ [key]: next });
+  };
+  const result = (_sessionQueues[key] || Promise.resolve()).then(run, run);
+  _sessionQueues[key] = result.catch(() => {});
+  return result;
+}
+
+// Update the entry of one tab in a { [tabId]: value } map.
+function updateTabData(key, tabId, fn) {
+  return updateSession(key, (all) => {
+    all = all || {};
+    const next = fn(all[tabId]);
+    if (next === undefined) delete all[tabId]; else all[tabId] = next;
+    return all;
+  });
+}
+
+const PER_TAB_KEYS = ['trackerCounts', 'shieldEvents', 'exfilAlerts', 'auditResults', 'quantumResults'];
+function clearTabData(tabId, keys) {
+  delete _trackerBatch[tabId];
+  return Promise.all(keys.map((key) => updateTabData(key, tabId, () => undefined)));
+}
+
+// Adds value to a capped session list; resolves true only the first time.
+async function markOnce(key, value, cap = 500) {
+  let added = false;
+  await updateSession(key, (list) => {
+    list = list || [];
+    if (list.includes(value)) return undefined;
+    added = true;
+    list.push(value);
+    return list.length > cap ? list.slice(-cap) : list;
+  });
+  return added;
+}
+
+// --- Notifications ---
+// At most one per (tab, kind) every 30 s; texts are fixed strings plus values
+// the extension itself determined — never text supplied by a page.
+const NOTIFY_INTERVAL_MS = 30000;
+const _lastNotified = new Map();
+function showNotification(kind, tabId, title, message) {
+  const key = `${tabId}|${kind}`;
+  const now = Date.now();
+  if (now - (_lastNotified.get(key) || 0) < NOTIFY_INTERVAL_MS) return;
+  _lastNotified.set(key, now);
+  chrome.notifications.create(`tg-${kind}-${now}`, { type: 'basic', iconUrl: 'icon128.png', title, message }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
+// --- Event payloads from content scripts ---
+// Only known fields of primitive type are kept, strings are capped, so a page
+// that triggers events can't bloat storage or smuggle markup into the popup.
+const MAX_STR = 200;
+const EVENT_FIELDS = {
+  exfilAlert: ['method', 'url', 'where', 'blocked', 'timestamp'],
+  fingerprintDetected: ['method', 'count', 'timestamp'],
+  formBlocked: ['action', 'fields', 'timestamp'],
+  minerBlocked: ['url', 'timestamp'],
+  webrtcBlocked: ['timestamp'],
+  keyloggerDetected: ['keyCount', 'inputCount', 'perElementCount', 'event', 'timestamp'],
+  clipboardSwapBlocked: ['cryptoType', 'original', 'swapped', 'blocked', 'timestamp'],
+  tabNappingBlocked: ['blockedUrl', 'timestamp'],
+  jsUrlBlocked: ['url', 'count', 'timestamp'],
+  dataIframeBlocked: ['src', 'count', 'timestamp'],
+  cookieBannerHidden: ['count', 'timestamp'],
+  jsThreatFound: ['externalThreats', 'noSRI', 'suspiciousScripts', 'obfuscatedInline', 'threats', 'timestamp'],
+  darkPatternFound: ['count', 'patterns', 'timestamp'],
+};
+const CRYPTO_TYPES = new Set(['BTC', 'ETH', 'TRX', 'SOL', 'LTC', 'IBAN']);
+
+function cleanPrimitive(v) {
+  if (typeof v === 'string') return v.substring(0, MAX_STR);
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v === 'boolean') return v;
+  return undefined;
+}
+
+// Arrays: up to 10 primitives or flat objects of primitives (e.g. threats, patterns).
+function cleanValue(v) {
+  if (!Array.isArray(v)) return cleanPrimitive(v);
+  return v.slice(0, 10).map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return cleanPrimitive(item);
+    const flat = {};
+    for (const [k, x] of Object.entries(item).slice(0, 8)) {
+      const c = cleanPrimitive(x);
+      if (c !== undefined) flat[k.substring(0, 40)] = c;
+    }
+    return flat;
+  }).filter((x) => x !== undefined);
+}
+
+function sanitizeDetail(action, message) {
+  const src = message.detail && typeof message.detail === 'object' ? message.detail : message;
+  const out = {};
+  for (const field of EVENT_FIELDS[action] || ['timestamp']) {
+    const v = cleanValue(src[field]);
+    if (v !== undefined) out[field] = v;
+  }
+  if (action === 'clipboardSwapBlocked' && !CRYPTO_TYPES.has(out.cryptoType)) out.cryptoType = 'crypto';
+  if (typeof out.timestamp !== 'number') out.timestamp = Date.now();
+  return out;
+}
+
 // --- Security Headers ---
 // Extra headers to capture for audit
 const AUDIT_HEADERS = [
@@ -468,21 +563,19 @@ const AUDIT_HEADERS = [
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.type !== 'main_frame') return;
+    if (details.tabId < 0) return;
     const headers = {};
-    const found = [];
+    const foundSet = new Set(); // a header sent twice still counts once
     const auditHeaders = {};
     for (const h of details.responseHeaders || []) {
       const name = h.name.toLowerCase();
-      if (SECURITY_HEADERS.includes(name)) { found.push(name); headers[name] = h.value; }
+      if (SECURITY_HEADERS.includes(name)) { foundSet.add(name); headers[name] = h.value; }
       if (AUDIT_HEADERS.includes(name)) { auditHeaders[name] = h.value; }
     }
+    const found = [...foundSet];
     const grade = calcGrade(found.length);
-    const result = { headers, found, missing: SECURITY_HEADERS.filter(h => !found.includes(h)), grade, auditHeaders };
-    chrome.storage.session.get('headerResults', (data) => {
-      const hr = data.headerResults || {};
-      hr[details.tabId] = result;
-      chrome.storage.session.set({ headerResults: hr });
-    });
+    const result = { headers, found, missing: SECURITY_HEADERS.filter(h => !foundSet.has(h)), grade, auditHeaders };
+    updateTabData('headerResults', details.tabId, () => result);
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders']
@@ -492,339 +585,367 @@ chrome.webRequest.onHeadersReceived.addListener(
 const _trackerBatch = {};
 let _trackerFlushTimer = null;
 
+const TRACKER_HOSTS = new Set(TRACKER_DOMAINS.filter((d) => !d.includes('/')));
+const TRACKER_PATHS = TRACKER_DOMAINS.filter((d) => d.includes('/')).map((d) => {
+  const i = d.indexOf('/');
+  return { host: d.slice(0, i), path: d.slice(i) };
+});
+
+function hostMatches(hostname, domain) {
+  return hostname === domain || hostname.endsWith('.' + domain);
+}
+
+// Same matching as the blocking rules (||entry^): the host or a parent domain
+// is listed, or a path entry matches up to a separator.
+function isTrackerUrl(url) {
+  for (let h = url.hostname; ; h = h.slice(h.indexOf('.') + 1)) {
+    if (TRACKER_HOSTS.has(h)) return true;
+    if (!h.includes('.')) break;
+  }
+  return TRACKER_PATHS.some(({ host, path }) => hostMatches(url.hostname, host)
+    && url.pathname.startsWith(path) && /^(?:$|[^\w.%-])/.test(url.pathname.slice(path.length)));
+}
+
 function flushTrackerCounts() {
   _trackerFlushTimer = null;
   const batch = { ..._trackerBatch };
-  // Clear batch
   for (const k of Object.keys(_trackerBatch)) delete _trackerBatch[k];
-  if (Object.keys(batch).length === 0) return;
-
-  chrome.storage.session.get('trackerCounts', (data) => {
-    const counts = data.trackerCounts || {};
-    for (const [tabId, updates] of Object.entries(batch)) {
-      if (!counts[tabId]) counts[tabId] = { total: 0, domains: {} };
-      counts[tabId].total += updates.total;
+  for (const [tabId, updates] of Object.entries(batch)) {
+    updateTabData('trackerCounts', tabId, (counts) => {
+      counts = counts || { total: 0, domains: {} };
+      counts.total += updates.total;
       for (const [dom, cnt] of Object.entries(updates.domains)) {
-        counts[tabId].domains[dom] = (counts[tabId].domains[dom] || 0) + cnt;
+        counts.domains[dom] = (counts.domains[dom] || 0) + cnt;
       }
-    }
-    chrome.storage.session.set({ trackerCounts: counts });
-  });
+      return counts;
+    });
+  }
 }
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.type === 'main_frame') return;
-    const hostname = getDomain(details.url);
-    const isTracker = TRACKER_DOMAINS.some(t => hostname === t || hostname.endsWith('.' + t));
+    if (details.tabId < 0) return;
+    if (details.type === 'main_frame') {
+      // New site page in this tab: drop what was collected for the previous one.
+      // Our own warning.html keeps the phishing event it is about.
+      if (/^https?:/.test(details.url)) clearTabData(details.tabId, PER_TAB_KEYS);
+      return;
+    }
+    let url;
+    try { url = new URL(details.url); } catch { return; }
+    if (!isTrackerUrl(url)) return;
+    // Rules only block third-party loads; count the same way
+    let initiatorHost = '';
+    try { initiatorHost = new URL(details.initiator).hostname; } catch {}
+    if (initiatorHost && getBaseDomain(initiatorHost) === getBaseDomain(url.hostname)) return;
 
-    if (isTracker && details.tabId > 0) {
-      const tid = details.tabId;
-      if (!_trackerBatch[tid]) _trackerBatch[tid] = { total: 0, domains: {} };
-      _trackerBatch[tid].total++;
-      const base = getBaseDomain(hostname);
-      _trackerBatch[tid].domains[base] = (_trackerBatch[tid].domains[base] || 0) + 1;
+    const tid = details.tabId;
+    if (!_trackerBatch[tid]) _trackerBatch[tid] = { total: 0, domains: {} };
+    _trackerBatch[tid].total++;
+    const base = getBaseDomain(url.hostname);
+    _trackerBatch[tid].domains[base] = (_trackerBatch[tid].domains[base] || 0) + 1;
 
-      // Flush every 2 seconds instead of on every request
-      if (!_trackerFlushTimer) {
-        _trackerFlushTimer = setTimeout(flushTrackerCounts, 2000);
-      }
+    // Flush every 2 seconds instead of on every request
+    if (!_trackerFlushTimer) {
+      _trackerFlushTimer = setTimeout(flushTrackerCounts, 2000);
     }
   },
   { urls: ['<all_urls>'] }
 );
 
 // --- Tracker blocking via declarativeNetRequest ---
-let _trackerUpdatePending = false;
-function updateTrackerRules(enabled) {
-  if (!chrome.declarativeNetRequest) return;
-  if (_trackerUpdatePending) return;
-  _trackerUpdatePending = true;
+const TRACKER_RESOURCE_TYPES = ['script', 'image', 'xmlhttprequest', 'sub_frame', 'ping', 'other'];
 
-  const allIds = TRACKER_DOMAINS.map((_, i) => i + 1);
-
-  if (!enabled) {
-    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: allIds }, () => {
-      _trackerUpdatePending = false;
-    });
-    return;
-  }
-
-  const rules = TRACKER_DOMAINS.map((domain, i) => ({
+function buildTrackerRules() {
+  return TRACKER_DOMAINS.map((entry, i) => ({
     id: i + 1,
     priority: 1,
     action: { type: 'block' },
     condition: {
-      urlFilter: `||${domain}`,
-      resourceTypes: ['script', 'image', 'xmlhttprequest', 'sub_frame', 'ping', 'other']
+      // `^` ends the match at a separator: ||t.co^ is t.co and its subdomains, not t.com
+      urlFilter: `||${entry}^`,
+      domainType: 'thirdParty',
+      resourceTypes: TRACKER_RESOURCE_TYPES
     }
   }));
-
-  chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: allIds, addRules: rules }, () => {
-    _trackerUpdatePending = false;
-  });
 }
 
-// Migrate settings on version update — ensure new defaults apply
-chrome.storage.local.get('_version', (data) => {
-  const currentVersion = chrome.runtime.getManifest().version;
-  if (data._version !== currentVersion) {
-    // First run or version changed — apply new defaults for keys not yet set
-    chrome.storage.local.set({ ...DEFAULT_SETTINGS, _version: currentVersion });
-  }
-});
+// Updates run one after another and each one applies the current setting,
+// so a quick off→on ends with rules on (the old pending flag dropped the 2nd call).
+let _trackerRulesQueue = Promise.resolve();
+function syncTrackerRules() {
+  _trackerRulesQueue = _trackerRulesQueue.then(async () => {
+    const { blockTrackers } = await chrome.storage.local.get({ blockTrackers: DEFAULT_SETTINGS.blockTrackers });
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: existing.map((r) => r.id),
+      addRules: blockTrackers ? buildTrackerRules() : []
+    });
+  }).catch((e) => console.error('[Bastion] tracker rules update failed:', e));
+  return _trackerRulesQueue;
+}
 
-// Init tracker blocking from settings
-chrome.storage.local.get(DEFAULT_SETTINGS, (s) => {
-  updateTrackerRules(s.blockTrackers);
-});
+// Settings whose default changed in that version. The pre-2.3 migration
+// rewrote every key to its default on each update, so stored values of these
+// keys reflect the old default rather than a user choice.
+const DEFAULT_CHANGES = { '2.3': ['autoDeleteExpired', 'blockJavascriptUrls'] };
+
+function versionLess(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
+  }
+  return false;
+}
+
+// Fill in missing settings without touching the user's choices.
+async function migrateSettings({ reason, previousVersion }) {
+  const stored = await chrome.storage.local.get(null);
+  const patch = { _version: chrome.runtime.getManifest().version };
+  for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+    if (!(key in stored)) patch[key] = value;
+  }
+  if (reason === 'update' && previousVersion) {
+    for (const [version, keys] of Object.entries(DEFAULT_CHANGES)) {
+      if (versionLess(previousVersion, version)) {
+        for (const key of keys) patch[key] = DEFAULT_SETTINGS[key];
+      }
+    }
+  }
+  await chrome.storage.local.set(patch);
+}
+chrome.runtime.onInstalled.addListener(migrateSettings);
+
+// Dynamic rules persist across restarts; rebuild them on install/update,
+// browser start and when the setting changes — not on every worker wake-up.
+chrome.runtime.onInstalled.addListener(() => { syncTrackerRules(); });
+chrome.runtime.onStartup.addListener(() => { syncTrackerRules(); });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.blockTrackers) {
-    updateTrackerRules(changes.blockTrackers.newValue);
-  }
+  if (area === 'local' && changes.blockTrackers) syncTrackerRules();
 });
 
-// --- Quantum-Ready TLS Detection ---
-// Post-quantum cipher suites / key exchange groups
-const PQ_INDICATORS = [
-  'X25519MLKEM768', 'X25519Kyber768', 'X25519Kyber512',  // ML-KEM / Kyber hybrids
-  'MLKEM768', 'MLKEM1024', 'Kyber768', 'Kyber512', 'Kyber1024',  // Pure ML-KEM
-  'SecP256r1MLKEM768', 'P256Kyber768',  // NIST P-256 + ML-KEM hybrid
-];
-const PQ_PATTERN = /kyber|mlkem|crystals|dilithium|sphincs|falcon|frodo|ntru|saber|bike|hqc/i;
+// --- TLS info ---
+// Chrome does not expose the negotiated key exchange or cipher to extensions
+// (webRequest.getSecurityInfo exists only in Firefox), so the post-quantum
+// status of an HTTPS page is 'unknown' — never guessed from other data.
+function initialTlsInfo(url) {
+  const isHttps = url.startsWith('https://');
+  return {
+    url,
+    isHttps,
+    protocol: isHttps ? 'TLS' : (url.startsWith('http://') ? 'HTTP' : 'other'),
+    pqStatus: isHttps ? 'unknown' : 'no_tls', // unknown | no_tls
+    keyExchange: null,
+    cipher: null,
+    timestamp: Date.now()
+  };
+}
 
 chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.type !== 'main_frame' || details.tabId < 0) return;
-
-    chrome.tabs.get(details.tabId, (tab) => {
-      if (chrome.runtime.lastError || !tab) return;
-
-      // Use chrome.tabs security state if available
-      const url = details.url || '';
-      const isHttps = url.startsWith('https://');
-      const isHttp = url.startsWith('http://');
-
-      // Store basic info, we'll enrich with SecurityState from popup
-      const quantumInfo = {
-        url: url,
-        isHttps: isHttps,
-        protocol: isHttps ? 'TLS' : (isHttp ? 'HTTP' : 'other'),
-        pqStatus: 'unknown', // unknown, pq_safe, classic, no_tls
-        keyExchange: null,
-        cipher: null,
-        timestamp: Date.now()
-      };
-
-      if (!isHttps) {
-        quantumInfo.pqStatus = 'no_tls';
-      }
-
-      chrome.storage.session.get('quantumResults', (data) => {
-        const qr = data.quantumResults || {};
-        qr[details.tabId] = quantumInfo;
-        chrome.storage.session.set({ quantumResults: qr });
-      });
-    });
+    updateTabData('quantumResults', details.tabId, () => initialTlsInfo(details.url || ''));
   },
   { urls: ['<all_urls>'] }
 );
 
-// Enrich quantum info when SecurityState is available (from popup via debugger or tab info)
-function checkQuantumStatus(tabId, securityInfo) {
-  chrome.storage.session.get('quantumResults', (data) => {
-    const qr = data.quantumResults || {};
-    if (!qr[tabId]) return;
-
-    if (securityInfo && securityInfo.keyExchange) {
-      qr[tabId].keyExchange = securityInfo.keyExchange;
-      qr[tabId].cipher = securityInfo.cipher || null;
-      qr[tabId].protocol = securityInfo.protocol || qr[tabId].protocol;
-
-      // Check if key exchange uses post-quantum algorithm
-      const kex = securityInfo.keyExchange;
-      const isPQ = PQ_INDICATORS.some(pq => kex.includes(pq)) || PQ_PATTERN.test(kex);
-      qr[tabId].pqStatus = isPQ ? 'pq_safe' : 'classic';
-    }
-
-    chrome.storage.session.set({ quantumResults: qr });
+// The popup can add the HTTP protocol it read from the Navigation Timing API
+// (h2, h3, http/1.1). Nothing else from the report is trusted or stored.
+async function checkQuantumStatus(tabId, securityInfo) {
+  let tabUrl = '';
+  try { tabUrl = (await chrome.tabs.get(tabId)).url || ''; } catch {}
+  const protocol = securityInfo && typeof securityInfo.protocol === 'string'
+    ? securityInfo.protocol.substring(0, 40) : null;
+  await updateTabData('quantumResults', tabId, (info) => {
+    // tabs opened before install, or pages webRequest doesn't see, have no entry yet
+    info = info || initialTlsInfo(tabUrl);
+    if (protocol) info.protocol = protocol;
+    return info;
   });
 }
 
 // --- Messages ---
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // From popup
-  if (message.action === 'getHeaderResults') {
-    chrome.storage.session.get('headerResults', (d) => { sendResponse((d.headerResults || {})[message.tabId] || null); });
+// Popup/extension-page requests. Each returns true when it answers async.
+function handlePageMessage(message, sender, sendResponse) {
+  const tabData = (key, fallback) => {
+    chrome.storage.session.get(key, (d) => { sendResponse((d[key] || {})[message.tabId] || fallback); });
     return true;
-  } else if (message.action === 'getExfilAlerts') {
-    chrome.storage.session.get('exfilAlerts', (d) => { sendResponse((d.exfilAlerts || {})[message.tabId] || []); });
-    return true;
-  } else if (message.action === 'getHistory') {
-    chrome.storage.local.get('history', (d) => { sendResponse(d.history || []); });
-    return true;
-  } else if (message.action === 'getSettings') {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (s) => { sendResponse(s); });
-    return true;
-  } else if (message.action === 'setSettings') {
-    chrome.storage.local.set(message.settings, () => {
-      chrome.tabs.query({}, (tabs) => {
-        for (const tab of tabs) {
-          chrome.tabs.sendMessage(tab.id, { action: 'settingsUpdated', settings: message.settings }).catch(() => {});
-        }
-      });
-      sendResponse({ ok: true });
-    });
-    return true;
-  } else if (message.action === 'getAutoDeleteLog') {
-    chrome.storage.session.get('autoDeleteLog', (d) => { sendResponse(d.autoDeleteLog || []); });
-    return true;
-  } else if (message.action === 'getTrackerCount') {
-    chrome.storage.session.get('trackerCounts', (d) => { sendResponse((d.trackerCounts || {})[message.tabId] || { total: 0, domains: {} }); });
-    return true;
-  } else if (message.action === 'getShieldEvents') {
-    chrome.storage.session.get('shieldEvents', (d) => { sendResponse((d.shieldEvents || {})[message.tabId] || []); });
-    return true;
-  } else if (message.action === 'getQuantumStatus') {
-    chrome.storage.session.get('quantumResults', (d) => { sendResponse((d.quantumResults || {})[message.tabId] || null); });
-    return true;
-  } else if (message.action === 'getAuditResults') {
-    chrome.storage.session.get('auditResults', (d) => { sendResponse((d.auditResults || {})[message.tabId] || null); });
-    return true;
-  } else if (message.action === 'startActiveSqli') {
-    runActiveSqliTest(message.url, message.params, message.tabId).then(r => sendResponse(r));
-    return true;
-  } else if (message.action === 'startActiveXss') {
-    runActiveXssTest(message.url, message.params, message.tabId).then(r => sendResponse(r));
-    return true;
-  } else if (message.action === 'startActiveAll') {
-    Promise.all([
-      runActiveSqliTest(message.url, message.params, message.tabId),
-      runActiveXssTest(message.url, message.params, message.tabId),
-      runActiveNoSqlTest(message.url, message.params, message.tabId),
-      runActiveSstiTest(message.url, message.params, message.tabId),
-      runActivePathTest(message.url, message.params, message.tabId),
-      runActiveCmdInjTest(message.url, message.params, message.tabId),
-      runActiveFormTest(message.url, message.forms || [], message.tabId)
-    ]).then(([sqli, xss, nosql, ssti, path, cmdi, formResults]) => sendResponse({
-      sqli: [...sqli, ...nosql],
-      xss,
-      formResults: [...formResults, ...ssti, ...path, ...cmdi]
-    }));
-    return true;
-  } else if (message.action === 'reportSecurityInfo') {
-    checkQuantumStatus(message.tabId, message.securityInfo);
-    sendResponse({ ok: true });
-    return true;
+  };
+  switch (message.action) {
+    case 'getHeaderResults': return tabData('headerResults', null);
+    case 'getExfilAlerts': return tabData('exfilAlerts', []);
+    case 'getTrackerCount': return tabData('trackerCounts', { total: 0, domains: {} });
+    case 'getShieldEvents': return tabData('shieldEvents', []);
+    case 'getQuantumStatus': return tabData('quantumResults', null);
+    case 'getAuditResults': return tabData('auditResults', null);
+    case 'getHistory':
+      chrome.storage.local.get('history', (d) => { sendResponse(d.history || []); });
+      return true;
+    case 'getSettings':
+      chrome.storage.local.get(DEFAULT_SETTINGS, (s) => { sendResponse(s); });
+      return true;
+    case 'getAutoDeleteLog':
+      chrome.storage.session.get('autoDeleteLog', (d) => { sendResponse(d.autoDeleteLog || []); });
+      return true;
+    case 'setSettings':
+      // content scripts pick changes up via chrome.storage.onChanged
+      chrome.storage.local.set(cleanSettings(message.settings), () => { sendResponse({ ok: true }); });
+      return true;
+    case 'startActiveAll':
+      runActiveAudit(message, sender).then(sendResponse, (e) => sendResponse({ error: e.message }));
+      return true;
+    case 'reportSecurityInfo':
+      checkQuantumStatus(message.tabId, message.securityInfo).then(() => sendResponse({ ok: true }));
+      return true;
   }
+  return false;
+}
 
-  // From content script
-  if (sender.tab) {
-    const tabId = sender.tab.id;
-    if (message.action === 'autoScanResult') {
-      handleAutoScan(message, sender);
-    } else if (message.action === 'exfilAlert') {
-      handleExfilAlert(message.detail, tabId);
-    } else if (message.action === 'autoDeletedExpired') {
-      chrome.storage.session.get('autoDeleteLog', (data) => {
-        let log = data.autoDeleteLog || [];
-        for (const d of message.deleted) {
-          log.push({ key: d.key, storage: d.storage, domain: getDomain(message.url), timestamp: Date.now() });
-        }
-        if (log.length > 100) log = log.slice(-100);
-        chrome.storage.session.set({ autoDeleteLog: log });
-      });
-      chrome.notifications.create(`tg-autodel-${Date.now()}`, {
-        type: 'basic', iconUrl: 'icon128.png', title: 'Bastion',
-        message: `Auto-deleted ${message.deleted.length} expired JWT on ${getDomain(message.url)}`
-      });
-    } else if (message.action === 'clipboardSwapBlocked') {
-      addShieldEvent(tabId, message);
-    } else if (message.action === 'jsThreatFound' || message.action === 'darkPatternFound') {
-      addShieldEvent(tabId, message);
-    } else if (message.action === 'breachCheckRequest') {
-      handleBreachCheck(message.passwords || [], tabId);
-    } else if (message.action === 'fingerprintDetected' || message.action === 'formBlocked' || message.action === 'minerBlocked' || message.action === 'phishingDetected' || message.action === 'cookieBannerHidden' || message.action === 'webrtcBlocked' || message.action === 'keyloggerDetected' || message.action === 'tabNappingBlocked' || message.action === 'jsUrlBlocked' || message.action === 'dataIframeBlocked') {
-      addShieldEvent(tabId, message);
-    }
-    return true; // keep port open for async operations
+// Only known settings with boolean values are written.
+function cleanSettings(settings) {
+  const out = {};
+  if (!settings || typeof settings !== 'object') return out;
+  for (const key of Object.keys(DEFAULT_SETTINGS)) {
+    if (typeof settings[key] === 'boolean') out[key] = settings[key];
   }
+  return out;
+}
+
+const SHIELD_EVENT_ACTIONS = new Set([
+  'fingerprintDetected', 'formBlocked', 'minerBlocked', 'cookieBannerHidden', 'webrtcBlocked',
+  'keyloggerDetected', 'tabNappingBlocked', 'jsUrlBlocked', 'dataIframeBlocked',
+  'clipboardSwapBlocked', 'jsThreatFound', 'darkPatternFound',
+]);
+
+// Content-script reports. None of them answers, so the channel is not kept open.
+function handleContentMessage(message, sender) {
+  const tabId = sender.tab.id;
+  const action = message.action;
+  if (action === 'autoScanResult') {
+    handleAutoScan(message, sender);
+  } else if (action === 'exfilAlert') {
+    handleExfilAlert(sanitizeDetail('exfilAlert', message), tabId);
+  } else if (action === 'autoDeletedExpired') {
+    handleAutoDeleted(message, sender);
+  } else if (action === 'breachCheckRequest') {
+    handleBreachCheck(message.passwords, tabId);
+  } else if (action === 'phishingDetected') {
+    handlePhishingDetected(message, sender);
+  } else if (SHIELD_EVENT_ACTIONS.has(action)) {
+    addShieldEvent(tabId, { action, detail: sanitizeDetail(action, message) });
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id || !message || typeof message.action !== 'string') return false;
+  if (isExtensionPage(sender)) return handlePageMessage(message, sender, sendResponse);
+  if (sender.tab) handleContentMessage(message, sender);
+  return false;
 });
 
-function addShieldEvent(tabId, message) {
-  chrome.storage.session.get('shieldEvents', (data) => {
-    const events = data.shieldEvents || {};
-    if (!events[tabId]) events[tabId] = [];
-    events[tabId].push({ action: message.action, detail: message.detail || message, timestamp: Date.now() });
-    if (events[tabId].length > 50) events[tabId] = events[tabId].slice(-50);
-    chrome.storage.session.set({ shieldEvents: events });
+function addShieldEvent(tabId, event) {
+  const write = updateTabData('shieldEvents', tabId, (events) => {
+    events = events || [];
+    events.push({ action: event.action, detail: event.detail, timestamp: Date.now() });
+    return events.length > 50 ? events.slice(-50) : events;
   });
 
-  // Уведомление для критических событий
-  if (message.action === 'phishingDetected') {
-    chrome.notifications.create(`tg-phish-${Date.now()}`, {
-      type: 'basic', iconUrl: 'icon128.png', title: 'Bastion: Phishing!',
-      message: `${message.domain || message.brand} looks like ${message.brand}! Do NOT enter your password.`
-    });
-  } else if (message.action === 'clipboardSwapBlocked') {
-    chrome.notifications.create(`tg-clip-${Date.now()}`, {
-      type: 'basic', iconUrl: 'icon128.png', title: 'Bastion: Clipboard Swap BLOCKED!',
-      message: `A script tried to replace your ${message.detail?.cryptoType || 'crypto'} address in clipboard! Original address restored.`
-    });
-  } else if (message.action === 'minerBlocked') {
-    chrome.notifications.create(`tg-miner-${Date.now()}`, {
-      type: 'basic', iconUrl: 'icon128.png', title: 'Bastion',
-      message: 'Crypto miner blocked on this page!'
-    });
+  // Notifications for critical events (fixed texts, rate-limited per tab)
+  if (event.action === 'clipboardSwapBlocked') {
+    showNotification(event.action, tabId, 'Bastion: Clipboard Swap BLOCKED!',
+      `A script tried to replace your ${event.detail.cryptoType} address in clipboard! Original address restored.`);
+  } else if (event.action === 'minerBlocked') {
+    showNotification(event.action, tabId, 'Bastion', 'Crypto miner blocked on this page!');
   }
+  return write;
+}
+
+// --- Anti-phishing interstitial ---
+// content.js reports a lookalike domain; the tab is sent to warning.html, an
+// extension page the site can't remove or restyle. "Continue" there adds the
+// domain to phishingAllowlist.
+const PHISHING_BRANDS = ['Google', 'Apple', 'Microsoft', 'Facebook', 'Amazon', 'PayPal', 'Netflix',
+  'Twitter/X', 'Telegram', 'Sberbank', 'Tinkoff/T-Bank', 'VTB', 'Alfa-Bank', 'WhatsApp', 'Binance', 'Homograph'];
+
+// A listed brand, optionally with the " (IDN)" suffix content.js adds for
+// punycode lookalikes (kept, so warning.html can say so); anything else is 'Unknown'.
+function phishingBrand(name) {
+  name = String(name || '');
+  const base = name.endsWith(' (IDN)') ? name.slice(0, -' (IDN)'.length) : name;
+  return PHISHING_BRANDS.includes(base) ? name : 'Unknown';
+}
+
+async function handlePhishingDetected(message, sender) {
+  if (!sender.tab || sender.frameId !== 0) return;
+  let url;
+  try { url = new URL(sender.url); } catch { return; }
+  if (!/^https?:$/.test(url.protocol)) return;
+  const domain = url.hostname;
+  const brand = phishingBrand(message.brand);
+  const { phishingAllowlist = [] } = await chrome.storage.local.get('phishingAllowlist');
+  if (phishingAllowlist.includes(domain)) return;
+
+  await addShieldEvent(sender.tab.id, { action: 'phishingDetected', detail: { brand, domain, timestamp: Date.now() } });
+  if (await markOnce('phishNotified', domain)) {
+    showNotification('phishing', sender.tab.id, 'Bastion: Phishing!',
+      `${domain} looks like ${brand}! Do NOT enter your password.`);
+  }
+  const params = new URLSearchParams({ url: url.href, domain, brand });
+  await chrome.tabs.update(sender.tab.id, { url: chrome.runtime.getURL('warning.html') + '?' + params });
 }
 
 // --- Breach Check via HIBP Passwords API (free, k-anonymity) ---
 // Checks passwords found in storage against the Pwned Passwords database.
 // Uses SHA-1 prefix (5 chars) — only the prefix leaves the browser, full hash stays local.
+// Results are cached per session and each leaked password is reported once.
+async function sha1Hex(value) {
+  const hash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+async function pwnedCount(hashHex) {
+  const { breachCache = {} } = await chrome.storage.session.get('breachCache');
+  if (hashHex in breachCache) return breachCache[hashHex];
+  const resp = await fetch(`https://api.pwnedpasswords.com/range/${hashHex.substring(0, 5)}`, {
+    headers: { 'Add-Padding': 'true' }
+  });
+  if (!resp.ok) return null;
+  const suffix = hashHex.substring(5);
+  let count = 0;
+  for (const line of (await resp.text()).split('\n')) {
+    const [hash, cnt] = line.split(':');
+    if (hash.trim() === suffix) { count = parseInt(cnt, 10) || 0; break; }
+  }
+  await updateSession('breachCache', (cache) => ({ ...(cache || {}), [hashHex]: count }));
+  return count;
+}
+
 async function handleBreachCheck(passwords, tabId) {
+  if (!Array.isArray(passwords)) return;
   const results = [];
-  for (const entry of passwords) {
+  let newLeaks = 0;
+  let fetched = false;
+  for (const entry of passwords.slice(0, 10)) {
+    if (!entry || typeof entry.value !== 'string' || !entry.value || entry.value.length > 256) continue;
     try {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(entry.value);
-      const hashBuffer = await crypto.subtle.digest('SHA-1', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-      const prefix = hashHex.substring(0, 5);
-      const suffix = hashHex.substring(5);
-
-      const resp = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
-        headers: { 'Add-Padding': 'true' }
-      });
-      if (!resp.ok) continue;
-      const text = await resp.text();
-      for (const line of text.split('\n')) {
-        const [hash, cnt] = line.split(':');
-        if (hash.trim() === suffix) {
-          results.push({
-            key: entry.key,
-            storage: entry.storage,
-            exposures: parseInt(cnt.trim()) || 0
-          });
-          break;
-        }
-      }
-
-      // Delay between requests to respect rate limits
-      if (passwords.length > 1) await new Promise(r => setTimeout(r, 1500));
+      const hashHex = await sha1Hex(entry.value);
+      const cached = (await chrome.storage.session.get('breachCache')).breachCache || {};
+      // Delay between network requests to respect rate limits
+      if (fetched && !(hashHex in cached)) await new Promise(r => setTimeout(r, 1500));
+      fetched = fetched || !(hashHex in cached);
+      const exposures = await pwnedCount(hashHex);
+      if (!exposures) continue;
+      results.push({ key: String(entry.key || '').substring(0, MAX_STR), storage: String(entry.storage || '').substring(0, 20), exposures });
+      if (await markOnce('breachNotified', hashHex)) newLeaks++;
     } catch {}
   }
 
   if (results.length > 0) {
-    addShieldEvent(tabId, {
-      action: 'breachFound',
-      detail: { results, timestamp: Date.now() }
-    });
-    chrome.notifications.create(`tg-breach-${Date.now()}`, {
-      type: 'basic', iconUrl: 'icon128.png', title: 'Bastion: Leaked Password!',
-      message: `${results.length} password(s) in storage found in data breaches!`
-    });
+    addShieldEvent(tabId, { action: 'breachFound', detail: { results, timestamp: Date.now() } });
+  }
+  if (newLeaks > 0) {
+    showNotification('breach', tabId, 'Bastion: Leaked Password!',
+      `${newLeaks} password(s) in storage found in data breaches!`);
   }
 }
 
@@ -958,9 +1079,57 @@ const PATH_TRAVERSAL_PAYLOADS = [
   { payload: '..%252f..%252f..%252fetc/passwd', check: /root:.*:0:0/i },
 ];
 
+// Active tests send attack payloads, so they run only when an extension page
+// asks, only against the active tab's own origin, and never submit POST forms
+// (those can change data) or anything the user typed.
+async function prepareActiveAudit(message, sender) {
+  // Extension pages only: content scripts run inside sites and must not trigger this
+  if (sender.id !== chrome.runtime.id || !String(sender.url).startsWith(chrome.runtime.getURL(''))) {
+    throw new Error('forbidden');
+  }
+  const tab = await chrome.tabs.get(message.tabId);
+  const origin = new URL(tab.url).origin;
+  const page = new URL(message.url);
+  if (!/^https?:$/.test(page.protocol) || page.origin !== origin) throw new Error('origin mismatch');
+  const sameOrigin = (u) => { try { return new URL(u).origin === origin; } catch { return false; } };
+  const forms = (Array.isArray(message.forms) ? message.forms : [])
+    .filter((f) => f && f.method === 'GET' && sameOrigin(f.action))
+    .map((f) => ({ ...f, inputs: (f.inputs || []).filter((i) => i && i.name && i.type !== 'password') }))
+    .filter((f) => f.inputs.length > 0);
+  const params = (Array.isArray(message.params) ? message.params : [])
+    .filter((p) => p && typeof p.key === 'string')
+    .map((p) => ({ key: p.key, value: String(p.value ?? '') }));
+  return { url: page.href, params, forms, tabId: tab.id };
+}
+
+async function runActiveAudit(message, sender) {
+  const { url, params, forms, tabId } = await prepareActiveAudit(message, sender);
+  // One suite at a time: parallel suites against the same host skew the
+  // time-based checks and multiply the load on the site.
+  const sqli = await runActiveSqliTest(url, params, tabId);
+  const xss = await runActiveXssTest(url, params, tabId);
+  const nosql = await runActiveNoSqlTest(url, params, tabId);
+  const ssti = await runActiveSstiTest(url, params, tabId);
+  const path = await runActivePathTest(url, params, tabId);
+  const cmdi = await runActiveCmdInjTest(url, params, tabId);
+  const formResults = await runActiveFormTest(url, forms, tabId);
+  return { sqli: [...sqli, ...nosql], xss, formResults: [...formResults, ...ssti, ...path, ...cmdi] };
+}
+
+// Response of the untouched page; a signature that is already there is not evidence.
+async function fetchBaselineText(pageUrl) {
+  try {
+    const resp = await fetch(pageUrl, {
+      method: 'GET', credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(5000)
+    });
+    return (await resp.text()).substring(0, 50000);
+  } catch { return ''; }
+}
+
 async function runActiveSqliTest(pageUrl, params, tabId) {
   const results = [];
   if (!params || params.length === 0) return results;
+  const baseText = await fetchBaselineText(pageUrl);
 
   // Phase 1: Error-based testing
   for (const param of params.slice(0, 5)) {
@@ -979,7 +1148,7 @@ async function runActiveSqliTest(pageUrl, params, tabId) {
         const text = await resp.text();
         const textSlice = text.substring(0, 50000);
         for (const pattern of SQL_ERROR_PATTERNS) {
-          if (pattern.test(textSlice)) {
+          if (pattern.test(textSlice) && !pattern.test(baseText)) {
             results.push({
               type: 'sqli', subtype: 'active_error', severity: 'critical',
               param: param.key, payload: payload,
@@ -1035,12 +1204,7 @@ async function runActiveSqliTest(pageUrl, params, tabId) {
   }
 
   // Store results
-  chrome.storage.session.get('auditResults', (data) => {
-    const ar = data.auditResults || {};
-    if (!ar[tabId]) ar[tabId] = { passive: [], active: [] };
-    ar[tabId].active = results;
-    chrome.storage.session.set({ auditResults: ar });
-  });
+  updateTabData('auditResults', tabId, (ar) => ({ passive: [], ...ar, active: results }));
 
   return results;
 }
@@ -1086,12 +1250,7 @@ async function runActiveXssTest(pageUrl, params, tabId) {
   }
 
   // Store results
-  chrome.storage.session.get('auditResults', (data) => {
-    const ar = data.auditResults || {};
-    if (!ar[tabId]) ar[tabId] = { passive: [], active: [] };
-    ar[tabId].activeXss = results;
-    chrome.storage.session.set({ auditResults: ar });
-  });
+  updateTabData('auditResults', tabId, (ar) => ({ passive: [], active: [], ...ar, activeXss: results }));
 
   return results;
 }
@@ -1240,6 +1399,7 @@ async function runActiveSstiTest(pageUrl, params, tabId) {
 async function runActivePathTest(pageUrl, params, tabId) {
   const results = [];
   if (!params || params.length === 0) return results;
+  const baseText = await fetchBaselineText(pageUrl);
 
   for (const param of params.slice(0, 5)) {
     let found = false;
@@ -1253,7 +1413,7 @@ async function runActivePathTest(pageUrl, params, tabId) {
           redirect: 'follow', signal: AbortSignal.timeout(5000)
         });
         const text = (await resp.text()).substring(0, 50000);
-        if (pt.check.test(text)) {
+        if (pt.check.test(text) && !pt.check.test(baseText)) {
           results.push({
             type: 'path_traversal', subtype: 'active_path', severity: 'critical',
             param: param.key, payload: pt.payload,
@@ -1296,6 +1456,19 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
   for (const form of forms.slice(0, 3)) {
     const testInputs = form.inputs.slice(0, 3);
 
+    // Baseline for form — send normal value to get base response
+    let formBaselineText = '';
+    const formBaselineNoSqlPatterns = new Set();
+    if (testInputs.length > 0) {
+      try {
+        formBaselineText = await sendFormPayload(form, testInputs[0].name, 'bastion_baseline');
+      } catch {}
+      for (const pattern of NOSQL_ERROR_PATTERNS) {
+        if (pattern.test(formBaselineText)) formBaselineNoSqlPatterns.add(pattern.source);
+      }
+    }
+
+
     // SQLi test
     for (const input of testInputs) {
       let found = false;
@@ -1304,7 +1477,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         try {
           const text = await sendFormPayload(form, input.name, payload);
           for (const pattern of SQL_ERROR_PATTERNS) {
-            if (pattern.test(text)) {
+            if (pattern.test(text) && !pattern.test(formBaselineText)) {
               results.push({
                 type: 'sqli', subtype: 'active_form_error', severity: 'critical',
                 param: input.name, payload,
@@ -1335,18 +1508,6 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         } catch {}
       }
       await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Baseline for form — send normal value to get base response
-    let formBaselineText = '';
-    const formBaselineNoSqlPatterns = new Set();
-    if (testInputs.length > 0) {
-      try {
-        formBaselineText = await sendFormPayload(form, testInputs[0].name, 'bastion_baseline');
-      } catch {}
-      for (const pattern of NOSQL_ERROR_PATTERNS) {
-        if (pattern.test(formBaselineText)) formBaselineNoSqlPatterns.add(pattern.source);
-      }
     }
 
     // SSTI test
@@ -1392,7 +1553,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
       for (const pt of FORM_PATH_PAYLOADS) {
         try {
           const text = await sendFormPayload(form, input.name, pt.payload);
-          if (pt.check.test(text)) {
+          if (pt.check.test(text) && !pt.check.test(formBaselineText)) {
             results.push({
               type: 'path_traversal', subtype: 'active_form_path', severity: 'critical',
               param: input.name, payload: pt.payload,
@@ -1412,7 +1573,7 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
         if (found) break;
         try {
           const text = await sendFormPayload(form, input.name, cmd.payload);
-          if (cmd.check.test(text)) {
+          if (cmd.check.test(text) && !cmd.check.test(formBaselineText)) {
             results.push({
               type: 'cmdi', subtype: 'active_form_cmdi', severity: 'critical',
               param: input.name, payload: cmd.payload,
@@ -1437,40 +1598,32 @@ async function runActiveFormTest(pageUrl, forms, tabId) {
   return deduped;
 }
 
-// Helper: send payload to a form field
+// Helper: send payload to a form field (GET forms only, see prepareActiveAudit).
+// Other fields get a placeholder so nothing the user typed leaves the page.
 async function sendFormPayload(form, targetField, payload) {
-  const body = new URLSearchParams();
+  if (form.method !== 'GET') throw new Error('only GET forms are tested');
+  const url = new URL(form.action);
   for (const inp of form.inputs) {
-    body.set(inp.name, inp.name === targetField ? payload : (inp.value || 'test'));
+    url.searchParams.set(inp.name, inp.name === targetField ? payload : 'test');
   }
-  const fetchOpts = {
-    credentials: 'omit', redirect: 'follow',
+  const resp = await fetch(url.href, {
+    method: 'GET', credentials: 'omit', redirect: 'follow',
     signal: AbortSignal.timeout(5000)
-  };
-  let resp;
-  if (form.method === 'POST') {
-    fetchOpts.method = 'POST';
-    fetchOpts.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
-    fetchOpts.body = body.toString();
-    resp = await fetch(form.action, fetchOpts);
-  } else {
-    const url = new URL(form.action);
-    for (const [k, v] of body) url.searchParams.set(k, v);
-    fetchOpts.method = 'GET';
-    resp = await fetch(url.href, fetchOpts);
-  }
+  });
   return (await resp.text()).substring(0, 50000);
 }
 
 function handleAutoScan(message, sender) {
   const tabId = sender.tab.id;
-  const count = message.findings.length;
-  const criticalCount = message.findings.filter(f => f.severity === 'critical').length;
+  const findings = Array.isArray(message.findings) ? message.findings.slice(0, 500) : [];
+  const url = sender.url || '';
+  const count = findings.length;
+  const criticalCount = findings.filter(f => f && f.severity === 'critical').length;
 
   chrome.storage.session.get('headerResults', (data) => {
     const hr = (data.headerResults || {})[tabId];
     const headerGrade = hr ? hr.grade : '?';
-    let finalGrade = headerGrade;
+    let finalGrade;
     if (headerGrade !== '?') {
       const grades = ['A', 'B', 'C', 'D', 'F'];
       let idx = grades.indexOf(headerGrade);
@@ -1489,37 +1642,27 @@ function handleAutoScan(message, sender) {
       : `Bastion [${finalGrade}]: safe`, tabId });
   });
 
-  if (criticalCount > 0) {
-    const domain = getDomain(message.url);
-    if (domain) {
-      chrome.storage.session.get('notifiedDomains', (data) => {
-        const notified = data.notifiedDomains || [];
-        if (!notified.includes(domain)) {
-          notified.push(domain);
-          // Cap at 500 to prevent unbounded growth
-          if (notified.length > 500) notified.splice(0, notified.length - 500);
-          chrome.storage.session.set({ notifiedDomains: notified });
-          chrome.notifications.create(`tg-${domain}-${Date.now()}`, {
-            type: 'basic', iconUrl: 'icon128.png', title: 'Bastion',
-            message: `${criticalCount} critical vulnerabilities found on ${domain}!`
-          });
-        }
-      });
-    }
+  const domain = getDomain(url);
+  if (criticalCount > 0 && domain) {
+    markOnce('notifiedDomains', domain).then((first) => {
+      if (first) {
+        showNotification('critical', tabId, 'Bastion', `${criticalCount} critical vulnerabilities found on ${domain}!`);
+      }
+    });
   }
-  saveToHistory(message.url, message.findings);
+  saveToHistory(url, findings, tabId);
 }
 
-function saveToHistory(url, findings) {
+function saveToHistory(url, findings, tabId) {
   const domain = getDomain(url);
   if (!domain) return;
   chrome.storage.session.get('headerResults', (sessionData) => {
-    let grade = '?';
-    const hr = sessionData.headerResults || {};
-    for (const tid of Object.keys(hr)) { if (hr[tid]) grade = hr[tid].grade; }
+    // the header grade of this tab, not whichever tab was stored last
+    const hr = (sessionData.headerResults || {})[tabId];
+    const grade = hr ? hr.grade : '?';
     const entry = { domain, date: new Date().toISOString().split('T')[0],
-      tokens: findings.filter(f => f.type === 'jwt').length,
-      secrets: findings.filter(f => f.type !== 'jwt' && f.severity !== 'info').length, grade };
+      tokens: findings.filter(f => f && f.type === 'jwt').length,
+      secrets: findings.filter(f => f && f.type !== 'jwt' && f.severity !== 'info').length, grade };
     chrome.storage.local.get('history', (data) => {
       let history = data.history || [];
       const idx = history.findIndex(h => h.domain === domain && h.date === entry.date);
@@ -1531,24 +1674,38 @@ function saveToHistory(url, findings) {
 }
 
 function handleExfilAlert(detail, tabId) {
-  chrome.storage.session.get('exfilAlerts', (data) => {
-    const alerts = data.exfilAlerts || {};
-    if (!alerts[tabId]) alerts[tabId] = [];
-    alerts[tabId].push(detail);
-    if (alerts[tabId].length > 50) alerts[tabId] = alerts[tabId].slice(-50);
-    chrome.storage.session.set({ exfilAlerts: alerts });
+  // popup renders method.toUpperCase(): keep it a string
+  detail.method = String(detail.method ?? '');
+  return updateTabData('exfilAlerts', tabId, (alerts) => {
+    alerts = alerts || [];
+    alerts.push(detail);
+    return alerts.length > 50 ? alerts.slice(-50) : alerts;
   });
+}
+
+const STORAGE_KINDS = new Set(['localStorage', 'sessionStorage', 'cookie']);
+function handleAutoDeleted(message, sender) {
+  const deleted = (Array.isArray(message.deleted) ? message.deleted : []).slice(0, 20).filter(d => d && d.key);
+  if (deleted.length === 0) return;
+  const domain = getDomain(sender.url || '');
+  updateSession('autoDeleteLog', (log) => {
+    log = log || [];
+    for (const d of deleted) {
+      log.push({
+        key: String(d.key).substring(0, MAX_STR),
+        storage: STORAGE_KINDS.has(d.storage) ? d.storage : 'unknown',
+        domain, timestamp: Date.now()
+      });
+    }
+    return log.length > 100 ? log.slice(-100) : log;
+  });
+  showNotification('autodel', sender.tab.id, 'Bastion', `Auto-deleted ${deleted.length} expired JWT on ${domain}`);
 }
 
 // Cleanup on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.get(['headerResults', 'exfilAlerts', 'trackerCounts', 'shieldEvents', 'quantumResults', 'auditResults'], (data) => {
-    const hr = data.headerResults || {}; delete hr[tabId];
-    const ea = data.exfilAlerts || {}; delete ea[tabId];
-    const tc = data.trackerCounts || {}; delete tc[tabId];
-    const se = data.shieldEvents || {}; delete se[tabId];
-    const qr = data.quantumResults || {}; delete qr[tabId];
-    const ar = data.auditResults || {}; delete ar[tabId];
-    chrome.storage.session.set({ headerResults: hr, exfilAlerts: ea, trackerCounts: tc, shieldEvents: se, quantumResults: qr, auditResults: ar });
-  });
+  clearTabData(tabId, ['headerResults', ...PER_TAB_KEYS]);
+  for (const key of _lastNotified.keys()) {
+    if (key.startsWith(tabId + '|')) _lastNotified.delete(key);
+  }
 });

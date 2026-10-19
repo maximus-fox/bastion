@@ -864,3 +864,44 @@ body {
 }
 .about-btn:hover { background: #0077b3; }
 .about-btn-ico { display: inline-flex; }
+
+/* ===================== Accessibility, overflow, confirmations ===================== */
+.status.neutral { background: #16213e; }
+.status.neutral .status-icon { color: #94a3b8; }
+.status.neutral .status-text { color: #cbd5e1; }
+
+.quantum-neutral { background: linear-gradient(135deg, #10203f, #16213e); }
+.quantum-neutral .quantum-grade { color: #60a5fa; text-shadow: 0 0 20px #3b82f644; }
+
+.tab:focus-visible,
+.lang-btn:focus-visible,
+.audit-btn:focus-visible,
+.action-btn:focus-visible,
+.btn-delete:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+.toggle input:focus-visible + .toggle-slider { outline: 2px solid #60a5fa; outline-offset: 2px; }
+
+/* Page-controlled strings (URLs, tokens, payloads) must wrap, never widen the popup */
+.exfil-item,
+.protect-log-item > span,
+.audit-item-detail,
+.audit-item-meta,
+.audit-item-meta code,
+.payload-val,
+.tip > span,
+.finding-key { overflow-wrap: anywhere; min-width: 0; }
+.protect-log-item { gap: 8px; }
+.protect-log-item > span:last-child { flex-shrink: 0; }
+
+.delete-confirm,
+.audit-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #fbbf24;
+}
+.delete-confirm[hidden],
+.audit-confirm[hidden] { display: none; }
+.delete-confirm > span { flex: 1 1 100%; }
