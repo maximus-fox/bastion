@@ -6,8 +6,11 @@ import { ROOT } from './helpers.mjs';
 
 /**
  * @param {Record<string, string | ((req, res) => void)>} routes path → HTML or handler
+ * @param {{ anyHost?: boolean }} [opts] anyHost: resolve every hostname to the
+ *   fixture server, so tests can visit e.g. http://paypal-login.test:PORT/
+ *   (beware of HSTS-preloaded real domains, which Chromium forces to https)
  */
-export async function launchExtension(routes = {}) {
+export async function launchExtension(routes = {}, { anyHost = false } = {}) {
   const server = createServer((req, res) => {
     const path = new URL(req.url, 'http://x').pathname;
     const route = routes[path];
@@ -20,7 +23,11 @@ export async function launchExtension(routes = {}) {
 
   const context = await chromium.launchPersistentContext('', {
     channel: 'chromium', // new headless mode, which supports extensions
-    args: [`--disable-extensions-except=${ROOT}`, `--load-extension=${ROOT}`],
+    args: [
+      `--disable-extensions-except=${ROOT}`,
+      `--load-extension=${ROOT}`,
+      ...(anyHost ? ['--host-resolver-rules=MAP * 127.0.0.1', '--no-proxy-server'] : []),
+    ],
   });
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
   const extensionId = new URL(worker.url()).host;
